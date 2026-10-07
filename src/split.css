@@ -1,0 +1,62 @@
+.resizable-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.resizable-split.is-split {
+  display: grid;
+  --pane-track: clamp(min(var(--pane-min), var(--pane-fraction)), var(--pane-size), max(0px, calc(100% - min(var(--pane-remaining), calc(100% - var(--pane-fraction))) - 1px)));
+}
+.resizable-split.horizontal.is-split {
+  grid-template-columns: var(--pane-track) 1px minmax(0, 1fr);
+}
+.resizable-split.horizontal.resize-second.is-split {
+  grid-template-columns: minmax(0, 1fr) 1px var(--pane-track);
+}
+.resizable-split.vertical.is-split {
+  grid-template-rows: var(--pane-track) 1px minmax(0, 1fr);
+}
+.resizable-split.vertical.resize-second.is-split {
+  grid-template-rows: minmax(0, 1fr) 1px var(--pane-track);
+}
+.split-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.resize-handle {
+  position: relative;
+  z-index: 10;
+  background: var(--border);
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.resize-handle.horizontal { cursor: col-resize; }
+.resize-handle.vertical { cursor: row-resize; }
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+.resize-handle.vertical::before { inset: -4px 0; }
+.resize-handle:hover,
+.resize-handle:focus-visible,
+.resize-handle.dragging { background: var(--accent); }
+.resize-handle.dragging::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  cursor: inherit;
+}
+.sidebar > .resize-handle {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 1px;
+}
+.sidebar > .resize-handle::before { left: -7px; right: 0; }

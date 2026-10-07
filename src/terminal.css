@@ -1,0 +1,72 @@
+.pane-toggles {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.pane-toggles > button {
+  border-radius: 0;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 14px;
+}
+.pane-toggles > button[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--surface);
+}
+.terminal-dock {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.terminal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: 34px;
+  padding: 2px 8px;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--border);
+}
+.terminal-tabs > div {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.terminal-tab > button[role="tab"] {
+  font-size: 12px;
+  padding: 6px 8px;
+  color: var(--muted);
+}
+.terminal-tab > button[aria-selected="true"] {
+  color: var(--text);
+  background: var(--surface);
+}
+.terminal-tabs .icon-button {
+  width: 26px;
+  height: 26px;
+}
+.workspace-terminal {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 6px 8px;
+  background: #141414;
+}
+.workspace-terminal .xterm {
+  height: 100%;
+}

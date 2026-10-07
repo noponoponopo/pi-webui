@@ -1,0 +1,23 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: test -f LICENSE
+      - run: bun install --frozen-lockfile
+      - run: bun run check && bun test && bun run build
+      - run: |
+          bun dist/cli.js pack release/pi-webui
+          tar -czf "pi-webui-${GITHUB_REF_NAME}.tar.gz" -C release pi-webui
+      - run: gh release create "$GITHUB_REF_NAME" "pi-webui-${GITHUB_REF_NAME}.tar.gz" --verify-tag --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
