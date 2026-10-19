@@ -12,7 +12,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function checkBridgeIsolation() {
   const previousSocket = process.env.PI_WEBUI_SOCKET;
   try {
-    for (const fault of ['offline', 'web-owner', 'cli-owner', 'late-owner', 'invalid-lease', 'lost-lease', 'startup-error', 'hello-error', 'bridge-error', 'invalid-json', 'disconnect']) {
+    for (const fault of ['offline', 'web-owner', 'cli-owner', 'late-owner', 'invalid-lease', 'lost-lease', 'startup-error', 'hello-error', 'bridge-error', 'invalid-json', 'disconnect', 'timestamps']) {
       const root = mkdtempSync('/tmp/pi-webui-');
       const file = join(root, 'session.jsonl');
       const socketPath = join(root, 'bridge.sock');
@@ -35,7 +35,11 @@ async function checkBridgeIsolation() {
         } },
         sessionManager: {
           getSessionId: () => 'native-session', getSessionFile: () => sessionFile,
-          getEntries: () => [], getLeafId: () => null,
+          getEntries: () => fault === 'timestamps' ? [{
+            type: 'message', id: 'old-message', parentId: null,
+            timestamp: '2025-01-02T03:04:05.000Z',
+            message: { role: 'user', content: 'Old conversation', timestamp: Date.parse('2025-01-02T03:04:05.000Z') },
+          }] : [], getLeafId: () => null,
           getCwd: () => root, getSessionName: () => undefined,
         },
       } as unknown as ExtensionContext;
@@ -53,10 +57,13 @@ async function checkBridgeIsolation() {
       };
       const sockets = new Set<Socket>();
       let snapshotReceived = false;
+      const snapshotTimes: number[] = [];
+      let bridgeRpc: JsonlConnection | undefined;
       const server = createServer((socket) => {
         sockets.add(socket);
         socket.on('close', () => sockets.delete(socket));
         const rpc = new JsonlConnection(socket, socket);
+        bridgeRpc = rpc;
         rpc.onEvent = (record: any) => {
           if (record.type === 'hello') {
             if (fault === 'invalid-json') { socket.write('invalid json\n'); return; }
@@ -65,6 +72,7 @@ async function checkBridgeIsolation() {
               : { id: record.id, type: 'response', success: true, data: { connectionId: 'test' } });
           } else if (record.type === 'snapshot') {
             snapshotReceived = true;
+            snapshotTimes.push(record.value.state.session.updatedAt);
             if (fault === 'bridge-error') void rpc.write({ type: 'bridge_error', error: 'Session file already owned' });
             if (fault === 'disconnect') socket.destroy();
           }
@@ -76,13 +84,25 @@ async function checkBridgeIsolation() {
           otherClaim = claimSessionFile(file, leases, fault === 'cli-owner' ? 'cli' : 'web');
           if (fault === 'invalid-lease') writeFileSync(join(leases, readdirSync(leases)[0]), '{');
         }
-        if (['hello-error', 'bridge-error', 'invalid-json', 'disconnect'].includes(fault))
+        if (['hello-error', 'bridge-error', 'invalid-json', 'disconnect', 'timestamps'].includes(fault))
           await new Promise<void>((resolve) => server.listen(socketPath, resolve));
         piWebUI(pi);
         await emit('session_start', { reason: 'startup' });
         if (server.listening) {
           for (let i = 0; i < 100 && !snapshotReceived && !notify.mock.calls.length; i++) await sleep(10);
           if (['bridge-error', 'disconnect'].includes(fault)) expect(snapshotReceived).toBe(true);
+        }
+        if (fault === 'timestamps') {
+          expect(snapshotReceived).toBe(true);
+          await bridgeRpc!.request({ type: 'snapshot_request' });
+          expect(snapshotTimes).toEqual(Array(2).fill(Date.parse('2025-01-02T03:04:05.000Z')));
+          await emit('message_end', { message: { role: 'user', content: 'New message', timestamp: Date.now() } });
+          await bridgeRpc!.request({ type: 'snapshot_request' });
+          const updatedAt = snapshotTimes.at(-1)!;
+          expect(updatedAt).toBeGreaterThan(snapshotTimes[0]);
+          await sleep(20);
+          await bridgeRpc!.request({ type: 'snapshot_request' });
+          expect(snapshotTimes.at(-1)).toBe(updatedAt);
         }
         await sleep(30);
         if (fault === 'late-owner') sessionFile = file;

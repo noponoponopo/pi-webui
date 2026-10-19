@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useMemo,
 } from "react";
 import {
   ArrowDown,
@@ -22,8 +23,7 @@ import {
 import type { RpcExtensionUIRequest } from "@earendil-works/pi-coding-agent";
 import type { PendingSelection, PiSnapshot, PiUpdate, Session } from "../shared/types";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { messageText } from "../shared/transcript";
-import { applyEvent } from "../shared/transcript";
+import { applyEvent, messageText, reconcileSnapshot } from "../shared/transcript";
 import { api, basename, useStream } from "./api";
 import { Composer } from "./Composer";
 import { ResizableSplit } from "./ResizableSplit";
@@ -133,43 +133,74 @@ export function PiView({
     document.addEventListener("selectionchange", updateSelection);
     return () => document.removeEventListener("selectionchange", updateSelection);
   }, []);
+  const latestData = useRef<PiSnapshot | undefined>(undefined);
+  const streamPrefill = useRef<{ id: string; text: string } | undefined>(undefined);
+  const showLatest = useCallback(() => {
+    if (document.hidden) return;
+    setData(latestData.current);
+    if (streamPrefill.current) {
+      setPrefill(streamPrefill.current);
+      streamPrefill.current = undefined;
+    }
+  }, []);
+  useEffect(() => {
+    document.addEventListener("visibilitychange", showLatest);
+    return () => document.removeEventListener("visibilitychange", showLatest);
+  }, [showLatest]);
   const connected = useStream<PiUpdate>(
     `/pi/${encodeURIComponent(session.id)}/stream?v=${generation}`,
-    (update) => {
-      if (update.kind === "snapshot") setData(update.value);
-      else if (update.kind === "state")
-        setData((current) =>
-          current ? { ...current, state: update.value } : current,
-        );
-      else {
-        setData((current) =>
-          current
-            ? {
-                ...current,
-                transcript: applyEvent(current.transcript, update.value),
-              }
-            : current,
-        );
-        if (
-          update.value.type === "extension_ui_request" &&
-          update.value.method === "set_editor_text"
-        )
-          setPrefill({ id: update.value.id, text: update.value.text });
+    (updates) => {
+      let current = latestData.current;
+      for (const update of updates) {
+        if (update.kind === "snapshot") current = reconcileSnapshot(current, update.value);
+        else if (update.kind === "state") {
+          if (current) current = { ...current, state: update.value };
+        } else {
+          if (current) {
+            const transcript = applyEvent(current.transcript, update.value);
+            if (transcript !== current.transcript) current = { ...current, transcript };
+          }
+          if (update.value.type === "extension_ui_request" && update.value.method === "set_editor_text")
+            streamPrefill.current = { id: update.value.id, text: update.value.text };
+        }
       }
+      latestData.current = current;
+      showLatest();
     },
     setError,
+    { batchMs: 50 },
   );
   const state = data?.state;
   const projection = data?.transcript;
   const online = connected && state?.connected !== false;
   const native = (state?.owner ?? session.kind) === "cli";
-  const empty =
-    !projection?.items.some((item) => item.message.role === "user") &&
-    !projection?.running;
-  const showIntro = empty && view === "chat";
-  const latestUser = projection?.items.findLast(
+  const onSessionRef = useRef(onSession);
+  onSessionRef.current = onSession;
+  useEffect(() => {
+    if (!connected || !native || state?.connected !== false || !session.file) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const attach = async () => {
+      try {
+        const resumed = await api<Session>("/pi/attach", { path: session.file });
+        if (disposed) return;
+        if (resumed.kind === "web") {
+          onSessionRef.current(resumed);
+          return;
+        }
+        timer = setTimeout(attach, 1000);
+      } catch (error) {
+        if (!disposed) setError((error as Error).message);
+      }
+    };
+    void attach();
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [connected, native, state?.connected, session.file]);
+  const latestUser = useMemo(() => projection?.items.findLast(
     (item) => item.message.role === "user",
-  )?.id;
+  )?.id, [projection?.items]);
+  const empty = !latestUser && !projection?.running;
+  const showIntro = empty && view === "chat";
   useEffect(() => {
     let anchor = true;
     follow.current = false;
@@ -271,6 +302,14 @@ export function PiView({
       setBranching(false);
     }
   };
+  const restorePending = useCallback((from: PendingSelection) => {
+    setRestoreRequest({ id: crypto.randomUUID(), from });
+  }, []);
+  const branchRef = useRef(branch);
+  branchRef.current = branch;
+  const onBranch = useCallback((...args: Parameters<typeof branch>) => {
+    void branchRef.current(...args);
+  }, []);
   const showTree = async () => {
     setError("");
     try {
@@ -284,11 +323,10 @@ export function PiView({
     }
   };
   const stats = state?.stats;
-  const turns =
-    stats?.userMessages ??
-    projection?.items.filter((item) => item.message.role === "user").length;
-  const calls =
-    stats?.toolCalls ??
+  const turns = useMemo(() => stats?.userMessages ??
+    projection?.items.filter((item) => item.message.role === "user").length,
+    [stats?.userMessages, projection?.items]);
+  const calls = useMemo(() => stats?.toolCalls ??
     projection?.items.reduce(
       (count, { message }) =>
         count +
@@ -296,7 +334,7 @@ export function PiView({
           ? message.content.filter((block) => block.type === "toolCall").length
           : 0),
       0,
-    );
+    ), [stats?.toolCalls, projection?.items]);
   const contextUsage = stats?.contextUsage ?? state?.contextUsage;
   const statuses = Object.values(state?.statuses || {})
     .filter(Boolean)
@@ -612,12 +650,10 @@ export function PiView({
                         <Transcript
                           projection={projection}
                           raw={view === "raw"}
-                          onBranch={(id, action, position) =>
-                            void branch(id, action, position)
-                          }
+                          onBranch={onBranch}
                           branchDisabled={branchDisabled}
                           onRestorePending={state?.capabilities?.queueRecovery
-                            ? (from) => setRestoreRequest({ id: crypto.randomUUID(), from })
+                            ? restorePending
                             : undefined}
                           restoreDisabled={!online || !state || state.loading || branching || Boolean(state.error) || composerBusy}
                         />

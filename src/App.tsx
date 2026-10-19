@@ -22,6 +22,7 @@ import {
 } from "./preferences";
 import { OpenHistoryDialog } from "./OpenHistoryDialog";
 import { Workspace } from "./Workspace";
+import { WorkspacePathInput } from "./WorkspacePathInput";
 import { ResizeHandle } from "./ResizableSplit";
 import { SessionMenu } from "./SessionMenu";
 import { sessionKey, storedActivity, storedBookmarks, updateActivity } from "./session-activity";
@@ -190,7 +191,7 @@ export function App() {
   const catalogConnected = useStream<{
     defaultCwd: string;
     sessions: SessionRow[];
-  }>("/pi/catalog/stream", (data) => {
+  }>("/pi/catalog/stream", ([data]) => {
     for (const session of data.sessions) {
       const completed = session.completion;
       if (session.running) generating.current.add(session.id);
@@ -638,7 +639,6 @@ export function App() {
       {creating && (
         <CreateDialog
           cwd={creating.cwd}
-          workspaces={workspaces}
           onClose={() => setCreating(undefined)}
           onPi={onCreated}
         />
@@ -744,12 +744,10 @@ function SessionActionDialog({ row, type, onClose, onDone }: {
 
 function CreateDialog({
   cwd: initialCwd,
-  workspaces,
   onClose,
   onPi,
 }: {
   cwd: string;
-  workspaces: string[];
   onClose: () => void;
   onPi: (session: Session) => void;
 }) {
@@ -855,23 +853,8 @@ function CreateDialog({
             void create();
           }}
         >
-          <label>
-            Working directory
-            <input
-              autoFocus
-              aria-label="Working directory"
-              value={cwd}
-              onChange={(event) => setCwd(event.target.value)}
-              placeholder="/path/to/project"
-              list="workspace-paths"
-              required
-            />
-            <datalist id="workspace-paths">
-              {workspaces.map((path) => (
-                <option key={path} value={path} />
-              ))}
-            </datalist>
-          </label>
+          <label htmlFor="workspace-path">Working directory</label>
+          <WorkspacePathInput value={cwd} onChange={setCwd} />
           <div className="dialog-actions">
             <button type="button" disabled={busy} onClick={onClose}>
               Cancel

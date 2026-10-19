@@ -110,9 +110,11 @@ function TerminalScreen({ id }: { id: string }) {
       if (update.reset && !following) term.scrollToLine(scroll);
     });
   };
-  const connected = useStream<TerminalUpdate>(`/terminals/${encodeURIComponent(id)}/stream`, (update) => {
-    setClosed(update.closed);
-    render(update);
+  const connected = useStream<TerminalUpdate>(`/terminals/${encodeURIComponent(id)}/stream`, (updates) => {
+    for (const update of updates) {
+      setClosed(update.closed);
+      render(update);
+    }
   }, setError);
   ready.current = connected && !closed;
   const send = (action: string, body: object) => {

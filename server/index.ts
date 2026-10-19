@@ -11,6 +11,7 @@ import type {
   Session,
 } from '../shared/types';
 import { Terminals } from './terminal';
+import { mergeMessageDeltas } from '../shared/transcript';
 import { PiSessions } from './pi';
 import { Store } from './store';
 import {
@@ -165,6 +166,7 @@ export function piCommand(body: Body): PiCommand {
 
 export function stream<T>(
   subscribe: (send: (value: T) => void) => () => void,
+  serialize: (value: T) => string = JSON.stringify,
 ): Response {
   const encoder = new TextEncoder();
   let cleanup: () => void = () => {};
@@ -200,7 +202,7 @@ export function stream<T>(
         cleanup = subscribe((value) => {
           if (closed) return;
           try {
-            write(`data: ${JSON.stringify(value)}\n\n`);
+            write(`data: ${serialize(value)}\n\n`);
           } catch (error) {
             closed = true;
             cleanup();
@@ -228,7 +230,7 @@ export function stream<T>(
   });
 }
 
-/** Partial tool results replace earlier results; text deltas remain lossless. */
+/** Coalesce partial progress without dropping text or crossing event boundaries. */
 export function piStream(
   subscribe: (send: (value: PiUpdate) => void) => () => void,
 ): Response {
@@ -236,6 +238,18 @@ export function piStream(
     const pending = new Map<string, PiUpdate>();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
+    let delta: Extract<PiUpdate, { kind: 'event' }> | undefined;
+    let deltaTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearDelta = () => {
+      clearTimeout(deltaTimer);
+      deltaTimer = undefined;
+      delta = undefined;
+    };
+    const flushDelta = () => {
+      const update = delta;
+      clearDelta();
+      if (!stopped && update) send(update);
+    };
     const clear = () => {
       clearTimeout(timer);
       timer = undefined;
@@ -251,9 +265,21 @@ export function piStream(
     };
     const unsubscribe = subscribe((update) => {
       if (stopped) return;
-      if (update.kind === 'snapshot') clear();
-      else if (update.kind === 'event') {
+      if (update.kind === 'snapshot') {
+        clearDelta();
+        clear();
+      } else if (update.kind === 'event') {
         const event = update.value;
+        let merged = mergeMessageDeltas(delta?.value, event);
+        if (!merged) {
+          flushDelta();
+          merged = mergeMessageDeltas(undefined, event);
+        }
+        if (merged) {
+          delta = { kind: 'event', value: merged };
+          deltaTimer ??= setTimeout(flushDelta, 50);
+          return;
+        }
         if (event.type === 'tool_execution_update') {
           pending.set(event.toolCallId, update);
           timer ??= setTimeout(flush, 150);
@@ -264,11 +290,12 @@ export function piStream(
           pending.delete(event.toolCallId);
           if (!pending.size) clear();
         }
-      }
+      } else flushDelta();
       send(update);
     });
     return () => {
       stopped = true;
+      clearDelta();
       clear();
       unsubscribe();
     };
@@ -284,6 +311,10 @@ export function startServer(
     bridgeSocket?: string;
   } = {},
 ) {
+  const publicOrigin = process.env.PI_WEBUI_PUBLIC_ORIGIN;
+  const publicURL = publicOrigin ? new URL(publicOrigin) : undefined;
+  if (publicURL && (publicURL.protocol !== 'https:' || publicURL.origin !== publicOrigin))
+    throw new Error('PI_WEBUI_PUBLIC_ORIGIN must be an HTTPS origin without a trailing slash');
   const dataDir = options.dataDir ?? stateDirectory();
   const bridgeSocket =
     options.bridgeSocket ??
@@ -318,13 +349,18 @@ export function startServer(
       };
     },
   );
-  const catalogListeners = new Set<() => void>();
+  const catalogListeners = new Set<(serialized: string) => void>();
   pi.onChange = bridge.onChange = () => {
-    for (const listener of catalogListeners) listener();
+    if (!catalogListeners.size) return;
+    const serialized = JSON.stringify(catalog());
+    for (const listener of catalogListeners) listener(serialized);
   };
   const catalog = () => {
     const native = bridge.list();
     const web = pi.list();
+    const nativeByFile = new Map(native.flatMap((row) =>
+      row.file ? [[canonicalFile(row.file), row] as const] : [],
+    ));
     const represented = new Set(web.map((row) => row.file && canonicalFile(row.file)));
     return {
       defaultCwd,
@@ -332,7 +368,7 @@ export function startServer(
         ...web.map((row) => {
           if (!row.file) return row;
           const file = canonicalFile(row.file);
-          const live = native.find((session) => session.file && canonicalFile(session.file) === file);
+          const live = nativeByFile.get(file);
           return live && bridge.owns(file) ? { ...live, id: row.id } : row;
         }),
         ...native.filter((row) => !row.file || !represented.has(canonicalFile(row.file))),
@@ -373,15 +409,25 @@ export function startServer(
         `127.0.0.1:${server.port}`,
         `localhost:${server.port}`,
       ];
+      if (publicURL) allowedHosts.push(publicURL.host);
       if (!allowedHosts.includes(request.headers.get('host') ?? ''))
         return new Response('Invalid host', { status: 403 });
       const origin = request.headers.get('origin');
-      const allowedOrigins = allowedHosts.map((host) => `http://${host}`);
+      const allowedOrigins = [
+        `http://127.0.0.1:${server.port}`,
+        `http://localhost:${server.port}`,
+        ...(publicOrigin ? [publicOrigin] : []),
+      ];
       if (process.env.PI_WEBUI_DEV === '1')
         allowedOrigins.push('http://127.0.0.1:5173', 'http://localhost:5173');
+      const pageNavigation =
+        request.method === 'GET' &&
+        !url.pathname.startsWith('/api/') &&
+        request.headers.get('sec-fetch-mode') === 'navigate' &&
+        request.headers.get('sec-fetch-dest') === 'document';
       if (
         (origin && !allowedOrigins.includes(origin)) ||
-        request.headers.get('sec-fetch-site') === 'cross-site'
+        (request.headers.get('sec-fetch-site') === 'cross-site' && !pageNavigation)
       )
         return new Response('Cross-origin access denied', { status: 403 });
       try {
@@ -435,20 +481,18 @@ export function startServer(
       if (path === '/api/bootstrap') return Response.json(catalog());
       if (path === '/api/pi/catalog/stream') {
         await bridge.ready;
-        return stream<ReturnType<typeof catalog>>((send) => {
+        return stream<string>((send) => {
           let previous = '';
-          const update = () => {
-            const value = catalog();
-            const serialized = JSON.stringify(value);
+          const update = (serialized: string) => {
             if (serialized !== previous) {
               previous = serialized;
-              send(value);
+              send(serialized);
             }
           };
           catalogListeners.add(update);
-          update();
+          update(JSON.stringify(catalog()));
           return () => catalogListeners.delete(update);
-        });
+        }, (serialized) => serialized);
       }
       if (path === '/api/pi/history') return Response.json(await pi.history());
       const match = path.match(/^\/api\/pi\/([^/]+)\/stream$/);
@@ -576,7 +620,9 @@ export function startServer(
         const native = bridge.byFile(file);
         const owned = storedByFile(file);
         return Response.json(
-          native?.connected ? { ...native, id: owned?.id ?? native.id } : (owned ?? (await bridge.watch(file))),
+          bridge.owns(file)
+            ? native ? { ...native, id: owned?.id ?? native.id } : await bridge.watch(file)
+            : owned ?? await pi.resume(file),
         );
       }
       if (path === '/api/pi/resume') {

@@ -172,6 +172,10 @@ class NativeBridgeSession {
     const levels = current?.reasoning ? [...THINKING_LEVELS] : ['off'];
     if (!levels.includes(thinkingLevel)) levels.push(thinkingLevel);
     const file = this.ctx.sessionManager.getSessionFile();
+    const updatedAt = this.ctx.sessionManager.getEntries().reduce(
+      (latest, entry) => Math.max(latest, Date.parse(entry.timestamp) || 0),
+      this.state?.session.updatedAt ?? 0,
+    ) || Date.now();
     return {
       owner: 'cli',
       connected,
@@ -184,7 +188,7 @@ class NativeBridgeSession {
           this.pi.getSessionName() ||
           promptName ||
           `CLI ${this.ctx.sessionManager.getSessionId().slice(0, 8)}`,
-        updatedAt: Date.now(),
+        updatedAt,
         ...(file ? { file } : {}),
       },
       loading: false,

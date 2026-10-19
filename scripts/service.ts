@@ -103,6 +103,7 @@ export function installService(root: string) {
   };
   for (const key of [
     'PI_WEBUI_PORT',
+    'PI_WEBUI_PUBLIC_ORIGIN',
     'PI_WEBUI_DATA_DIR',
     'PI_WEBUI_SOCKET',
     'PI_CODING_AGENT_DIR',

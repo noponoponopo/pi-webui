@@ -26,8 +26,9 @@ export async function api<T>(path: string, body?: object): Promise<T> {
 
 export function useStream<T>(
   path: string | undefined,
-  onUpdate: (update: T) => void,
+  onUpdate: (updates: T[]) => void,
   onError?: (message: string) => void,
+  { batchMs = 0 } = {},
 ) {
   const update = useRef(onUpdate);
   update.current = onUpdate;
@@ -40,8 +41,21 @@ export function useStream<T>(
     let source: EventSource | undefined;
     let halted = false;
     let lastTick = Date.now();
+    let pending: T[] = [];
+    let batch: ReturnType<typeof setTimeout> | undefined;
+    const clearBatch = () => {
+      clearTimeout(batch);
+      batch = undefined;
+      pending = [];
+    };
+    const flush = () => {
+      const values = pending;
+      clearBatch();
+      if (values.length) update.current(values);
+    };
     const connect = () => {
       if (halted) return;
+      flush();
       source?.close();
       setConnected(false);
       lastTick = Date.now();
@@ -54,18 +68,28 @@ export function useStream<T>(
         if (!halted && source === next) setConnected(false);
       };
       next.onmessage = (event) => {
-        if (!halted && source === next) update.current(JSON.parse(event.data));
+        if (halted || source !== next) return;
+        const value = JSON.parse(event.data) as T;
+        if (!batchMs) update.current([value]);
+        else {
+          pending.push(value);
+          batch ??= setTimeout(flush, batchMs);
+        }
       };
       next.addEventListener('stream_error', (event) => {
         if (halted || source !== next) return;
         halted = true;
+        flush();
         next.close();
         setConnected(false);
         error.current?.(JSON.parse((event as MessageEvent).data));
       });
     };
     const resume = () => {
-      if (!document.hidden) connect();
+      if (!document.hidden) {
+        if (!source || source.readyState === EventSource.CLOSED || Date.now() - lastTick > 30_000) connect();
+        else flush();
+      }
     };
     connect();
     window.addEventListener('online', resume);
@@ -80,13 +104,14 @@ export function useStream<T>(
     return () => {
       halted = true;
       source?.close();
+      clearBatch();
       window.clearInterval(timer);
       window.removeEventListener('online', resume);
       window.removeEventListener('focus', resume);
       window.removeEventListener('pageshow', resume);
       document.removeEventListener('visibilitychange', resume);
     };
-  }, [path]);
+  }, [path, batchMs]);
   return connected;
 }
 

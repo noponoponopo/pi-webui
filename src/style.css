@@ -1209,6 +1209,35 @@ main {
 .modal textarea {
   width: 100%;
 }
+.workspace-path-input {
+  position: relative;
+}
+.workspace-path-input > input {
+  width: 100%;
+}
+.workspace-path-options {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px #0002;
+}
+.workspace-path-options > button {
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.workspace-path-options > button[aria-selected="true"] {
+  background: var(--surface);
+}
 .dialog-actions {
   display: flex;
   gap: 9px;

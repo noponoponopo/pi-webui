@@ -24,52 +24,50 @@ for (const [name, language] of Object.entries({
 }))
   hljs.registerLanguage(name, language);
 
+const CodeBlock = memo(function CodeBlock({ text, language }: { text: string; language: string }) {
+  const highlighted = language && hljs.getLanguage(language)
+    ? hljs.highlight(text, { language, ignoreIllegals: true }).value
+    : undefined;
+  return (
+    <div className="code-block">
+      <header>
+        <span>{language || 'text'}</span>
+        <CopyButton text={text} />
+      </header>
+      <pre>
+        {highlighted ? (
+          <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+        ) : (
+          <code>{text}</code>
+        )}
+      </pre>
+    </div>
+  );
+});
+
+const remarkPlugins = [remarkGfm];
+const components: NonNullable<Parameters<typeof ReactMarkdown>[0]['components']> = {
+  a: ({ children, ...props }) => (
+    <a {...props} target="_blank" rel="noreferrer">{children}</a>
+  ),
+  img: ({ alt }) => (
+    <span className="muted">[Image: {alt || 'external image'}]</span>
+  ),
+  pre: ({ node, children }) => {
+    const code = node?.children[0];
+    if (code?.type !== 'element') return <pre>{children}</pre>;
+    const text = code.children
+      .map((child) => (child.type === 'text' ? child.value : ''))
+      .join('');
+    const language = String(code.properties.className || '').replace('language-', '');
+    return <CodeBlock text={text} language={language} />;
+  },
+};
+
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ children, ...props }) => (
-            <a {...props} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          ),
-          img: ({ alt }) => (
-            <span className="muted">[Image: {alt || 'external image'}]</span>
-          ),
-          pre: ({ node, children }) => {
-            const code = node?.children[0];
-            if (code?.type !== 'element') return <pre>{children}</pre>;
-            const text = code.children
-              .map((child) => (child.type === 'text' ? child.value : ''))
-              .join('');
-            const language = String(code.properties.className || '').replace(
-              'language-',
-              '',
-            );
-            const highlighted =
-              language && hljs.getLanguage(language)
-                ? hljs.highlight(text, { language, ignoreIllegals: true }).value
-                : undefined;
-            return (
-              <div className="code-block">
-                <header>
-                  <span>{language || 'text'}</span>
-                  <CopyButton text={text} />
-                </header>
-                <pre>
-                  {highlighted ? (
-                    <code dangerouslySetInnerHTML={{ __html: highlighted }} />
-                  ) : (
-                    <code>{text}</code>
-                  )}
-                </pre>
-              </div>
-            );
-          },
-        }}
-      >
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
         {text}
       </ReactMarkdown>
     </div>

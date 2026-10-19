@@ -191,12 +191,8 @@ const Answer = memo(function Answer({
   );
 });
 
-function ProcessRow({
-  step,
-  progress,
-}: {
-  step: ChatStep;
-  progress: Projection['tools'];
+const ProcessRow = memo(function ProcessRow(step: ChatStep & {
+  tool?: Projection['tools'][string];
 }) {
   if (step.kind === 'context')
     return (
@@ -245,7 +241,7 @@ function ProcessRow({
         )}
       </Disclosure>
     );
-  const tool = progress[step.callId];
+  const tool = step.tool;
   const args = tool?.args ?? step.args;
   const failed =
     step.result?.role === 'toolResult' ? step.result.isError : tool?.error;
@@ -294,7 +290,7 @@ function ProcessRow({
       }}
     </Disclosure>
   );
-}
+});
 
 function Process({
   steps,
@@ -311,7 +307,11 @@ function Process({
   const rows = () => (
     <div className="work-items">
       {steps.map((step) => (
-        <ProcessRow step={step} progress={progress} key={step.id} />
+        <ProcessRow
+          {...step}
+          tool={step.kind === 'tool' ? progress[step.callId] : undefined}
+          key={step.id}
+        />
       ))}
     </div>
   );
@@ -392,9 +392,25 @@ const Turn = memo(function Turn({
       )}
     </section>
   );
+}, (previous, next) => {
+  if (previous.partial !== next.partial || previous.running !== next.running ||
+      previous.onBranch !== next.onBranch || previous.branchDisabled !== next.branchDisabled ||
+      previous.turn.id !== next.turn.id || previous.turn.user !== next.turn.user ||
+      previous.turn.items.length !== next.turn.items.length) return false;
+  const sameTool = (id: string) => previous.progress[id] === next.progress[id];
+  const sameProgress = (message: Message, id: string) =>
+    message.role === 'assistant'
+      ? message.content.every((block) => block.type !== 'toolCall' || sameTool(block.id))
+      : message.role === 'toolResult'
+        ? sameTool(message.toolCallId)
+        : message.role !== 'bashExecution' || sameTool(id);
+  if (next.partial && !sameProgress(next.partial, '')) return false;
+  return previous.turn.items.every((item, index) =>
+    item === next.turn.items[index] && sameProgress(item.message, item.id),
+  );
 });
 
-export function Transcript({
+export const Transcript = memo(function Transcript({
   projection,
   raw = false,
   onBranch,
@@ -480,50 +496,35 @@ export function Transcript({
       )}
     </div>
   );
-}
+});
 function Raw({ projection }: { projection: Projection }) {
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(150);
   const items = useMemo(
-    () =>
-      projection.items.filter((item) =>
-        JSON.stringify(item.message)
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-      ),
+    () => {
+      if (!query) return projection.items;
+      const search = query.toLowerCase();
+      return projection.items.filter((item) =>
+        JSON.stringify(item.message).toLowerCase().includes(search),
+      );
+    },
     [projection.items, query],
   );
-  const visible = items.slice(-limit);
-  const calls = projection.items.filter(
+  const calls = useMemo(() => projection.items.filter(
     (item) => item.message.role === 'toolResult',
-  ).length;
+  ).length, [projection.items]);
+  const turns = useMemo(() => projection.items.filter(
+    (item) => item.message.role === 'user',
+  ).length, [projection.items]);
   const role = (message: Message) =>
     message.role === 'toolResult' || message.role === 'bashExecution'
       ? 'tool'
       : message.role === 'custom'
         ? 'context'
         : message.role;
-  return (
-    <div className="raw">
-      <div className="raw-toolbar">
-        <span>
-          {
-            projection.items.filter((item) => item.message.role === 'user')
-              .length
-          }{' '}
-          turns
-        </span>
-        <span>{calls} calls</span>
-        <label>
-          <Search size={15} />
-          <input
-            aria-label="Search messages"
-            placeholder="Search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </label>
-      </div>
+  const history = useMemo(() => {
+    const visible = items.slice(-limit);
+    return <>
       <div className="raw-timeline" aria-label="Message timeline">
         {(['input', 'agent', 'tool'] as const).map((lane) => (
           <div className="raw-lane" key={lane}>
@@ -580,6 +581,26 @@ function Raw({ projection }: { projection: Projection }) {
           {() => <RawMessage value={item.message} />}
         </Disclosure>
       ))}
+    </>;
+  }, [items, limit]);
+  return (
+    <div className="raw">
+      <div className="raw-toolbar">
+        <span>
+          {turns} turns
+        </span>
+        <span>{calls} calls</span>
+        <label>
+          <Search size={15} />
+          <input
+            aria-label="Search messages"
+            placeholder="Search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+      </div>
+      {history}
       {projection.partial && (
         <div className="raw-live">
           <span className="role-label assistant">assistant</span>
