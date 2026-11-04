@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
   ArrowDown,
   Brain,
@@ -15,8 +15,10 @@ import type {
   Message,
   PendingSelection,
   Projection,
+  TranscriptPage,
 } from '../shared/types';
 import { messageText } from '../shared/transcript';
+import { reconcileHistory } from '../shared/display';
 import {
   chatTurns,
   contextLabel,
@@ -24,10 +26,24 @@ import {
   type ChatStep,
   type ChatTurn,
 } from '../shared/chat';
-import { Markdown } from './Markdown';
+import { Markdown, MarkdownCwd } from './Markdown';
+import { DeferredImage, isDisplayUrl } from './DeferredContent';
 import { CopyButton, Disclosure, IconButton } from './ui';
 
-const RawMessage = memo(function RawMessage({ value }: { value: unknown }) {
+function formatMessageTime(ts: number) {
+  const d = new Date(ts);
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  return sameDay
+    ? time
+    : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+const RawMessage = memo(function RawMessage({ value }: { value: Message }) {
   const json = useMemo(() => JSON.stringify(value, null, 2), [value]);
   return (
     <div className="entry-detail">
@@ -96,13 +112,8 @@ function Images({ message }: { message: Message }) {
       {message.content.map((block, index) =>
         block.type === 'image' &&
         /^image\/(png|jpeg|gif|webp)$/.test(block.mimeType) ? (
-          <img
-            key={index}
-            className="message-image"
-            loading="lazy"
-            src={`data:${block.mimeType};base64,${block.data}`}
-            alt="Attached image"
-          />
+          <DeferredImage key={index} src={'url' in block && isDisplayUrl(block.url)
+            ? block.url : `data:${block.mimeType};base64,${block.data}`} />
         ) : null,
       )}
     </>
@@ -133,8 +144,8 @@ function MessageActions({
     <>
       <button
         className="icon-button"
-        title={disabledReason || 'Fork from this message'}
-        aria-label="Fork from this message"
+        title={disabledReason || (position === 'before' ? 'Fork before this message' : 'Fork after this message')}
+        aria-label={position === 'before' ? 'Fork before this message' : 'Fork after this message'}
         disabled={Boolean(disabledReason)}
         onClick={() => onBranch(entryId!, 'fork', position)}
       >
@@ -142,8 +153,8 @@ function MessageActions({
       </button>
       <button
         className="icon-button"
-        title={disabledReason || 'Continue from this message'}
-        aria-label="Continue from this message"
+        title={disabledReason || (position === 'before' ? 'Edit this message and branch' : 'Continue after this message')}
+        aria-label={position === 'before' ? 'Edit this message and branch' : 'Continue after this message'}
         disabled={Boolean(disabledReason)}
         onClick={() => onBranch(entryId!, 'navigate_tree')}
       >
@@ -364,12 +375,7 @@ const Turn = memo(function Turn({
             <div className="user-text">{textOnly(turn.user)}</div>
           </div>
           <div className="message-meta">
-            <time>
-              {new Date(turn.user.timestamp).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </time>
+            <time>{formatMessageTime(turn.user.timestamp)}</time>
             <CopyButton text={textOnly(turn.user)} />
             <MessageActions entryId={turn.id} onBranch={onBranch} branchDisabled={branchDisabled} />
           </div>
@@ -410,13 +416,15 @@ const Turn = memo(function Turn({
   );
 });
 
-export const Transcript = memo(function Transcript({
+const TranscriptBody = memo(function TranscriptBody({
   projection,
   raw = false,
   onBranch,
   branchDisabled,
   onRestorePending,
   restoreDisabled,
+  search = '',
+  onSearch,
 }: {
   projection: Projection;
   raw?: boolean;
@@ -424,21 +432,17 @@ export const Transcript = memo(function Transcript({
   branchDisabled?: string;
   onRestorePending?: (from: PendingSelection) => void;
   restoreDisabled?: boolean;
+  search?: string;
+  onSearch?: (query: string) => void;
 }) {
-  const [limit, setLimit] = useState(40);
   const grouped = useMemo(
     () => chatTurns(projection.items),
     [projection.items],
   );
-  if (raw) return <Raw projection={projection} />;
-  const visible = grouped.slice(-limit);
+  if (raw) return <Raw projection={projection} query={search} onSearch={onSearch} />;
+  const visible = grouped;
   return (
     <div className="chat-column">
-      {grouped.length > limit && (
-        <button className="load-older" onClick={() => setLimit(limit + 40)}>
-          Load earlier messages
-        </button>
-      )}
       {visible.map((turn, index) => {
         const last = index === visible.length - 1;
         return (
@@ -497,19 +501,10 @@ export const Transcript = memo(function Transcript({
     </div>
   );
 });
-function Raw({ projection }: { projection: Projection }) {
-  const [query, setQuery] = useState('');
-  const [limit, setLimit] = useState(150);
-  const items = useMemo(
-    () => {
-      if (!query) return projection.items;
-      const search = query.toLowerCase();
-      return projection.items.filter((item) =>
-        JSON.stringify(item.message).toLowerCase().includes(search),
-      );
-    },
-    [projection.items, query],
-  );
+function Raw({ projection, query, onSearch }: {
+  projection: Projection; query: string; onSearch?: (query: string) => void;
+}) {
+  const items = projection.items;
   const calls = useMemo(() => projection.items.filter(
     (item) => item.message.role === 'toolResult',
   ).length, [projection.items]);
@@ -523,7 +518,7 @@ function Raw({ projection }: { projection: Projection }) {
         ? 'context'
         : message.role;
   const history = useMemo(() => {
-    const visible = items.slice(-limit);
+    const visible = items;
     return <>
       <div className="raw-timeline" aria-label="Message timeline">
         {(['input', 'agent', 'tool'] as const).map((lane) => (
@@ -548,11 +543,6 @@ function Raw({ projection }: { projection: Projection }) {
           </div>
         ))}
       </div>
-      {items.length > limit && (
-        <button className="load-older" onClick={() => setLimit(limit + 150)}>
-          Load earlier entries
-        </button>
-      )}
       {visible.map((item) => (
         <Disclosure
           className="raw-entry"
@@ -560,10 +550,8 @@ function Raw({ projection }: { projection: Projection }) {
           key={item.id}
           summary={
             <>
-              <time>
-                {new Date(item.message.timestamp).toLocaleTimeString([], {
-                  hour12: false,
-                })}
+              <time title={new Date(item.message.timestamp).toLocaleString()}>
+                {new Date(item.message.timestamp).toLocaleTimeString([], { hour12: false })}
               </time>
               <span className={`role-label ${role(item.message)}`}>
                 {role(item.message)}
@@ -582,7 +570,7 @@ function Raw({ projection }: { projection: Projection }) {
         </Disclosure>
       ))}
     </>;
-  }, [items, limit]);
+  }, [items]);
   return (
     <div className="raw">
       <div className="raw-toolbar">
@@ -594,9 +582,10 @@ function Raw({ projection }: { projection: Projection }) {
           <Search size={15} />
           <input
             aria-label="Search messages"
-            placeholder="Search"
+            placeholder="Search all messages"
+            maxLength={200}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => onSearch?.(event.target.value)}
           />
         </label>
       </div>
@@ -616,3 +605,118 @@ function Raw({ projection }: { projection: Projection }) {
     </div>
   );
 }
+
+type TranscriptProps = {
+  sessionId: string;
+  cwd: string;
+} & ComponentProps<typeof TranscriptBody>;
+
+// Keep chronological order while allowing live messages to replace saved versions.
+function mergeItems(older: Projection['items'], newer: Projection['items']) {
+  const latest = new Map(newer.map((item) => [item.id, item]));
+  const ids = new Set(older.map((item) => item.id));
+  return [...older.filter((item) => !item.id.startsWith('live-') || latest.has(item.id))
+    .map((item) => latest.get(item.id) ?? item),
+    ...newer.filter((item) => !ids.has(item.id))];
+}
+
+function TranscriptHistory({ sessionId, cwd, query, search, onSearch, ...props }: TranscriptProps & {
+  query: string;
+  search: string;
+  onSearch: (value: string) => void;
+}) {
+  const [saved, setHistory] = useState<{ query: string; page: TranscriptPage }>(() => ({
+    query, page: { items: props.projection.items, before: props.projection.before,
+      total: props.projection.total ?? props.projection.items.length },
+  }));
+  const history: TranscriptPage = saved.query === query ? saved.page : { items: [], total: 0 };
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [retry, setRetry] = useState(0);
+  const sentinel = useRef<HTMLDivElement>(null);
+  const anchor = useRef<{ element: Element; top: number } | undefined>(undefined);
+  const searched = Boolean(query && saved.query === query);
+
+  useEffect(() => {
+    if (query) return;
+    setHistory((previous) => {
+      const page: TranscriptPage = previous.query === query ? previous.page : { items: [], total: 0 };
+      return { query, page: reconcileHistory(page, props.projection) };
+    });
+  }, [props.projection.items, props.projection.before, props.projection.total, query]);
+
+  useLayoutEffect(() => {
+    const saved = anchor.current;
+    anchor.current = undefined;
+    const scroll = sentinel.current?.closest('.transcript-scroll');
+    if (saved?.element.isConnected && scroll) {
+      scroll.scrollTop += saved.element.getBoundingClientRect().top - saved.top;
+    }
+  }, [history]);
+
+  useEffect(() => {
+    setBusy(false);
+    setError('');
+    const marker = sentinel.current;
+    const root = marker?.closest('.transcript-scroll');
+    if (!marker || !root || (!history.before && (!query || searched))) return;
+    const controller = new AbortController();
+    let loading = false;
+    const load = async () => {
+      if (loading) return;
+      loading = true;
+      setBusy(true);
+      setError('');
+      try {
+        const parameters = new URLSearchParams({
+          ...(history.before ? { before: history.before } : {}),
+          ...(query ? { q: query } : {}),
+        });
+        const response = await fetch(`/api/pi/${encodeURIComponent(sessionId)}/messages?${parameters}`, {
+          signal: controller.signal, cache: 'no-store',
+        });
+        const value: TranscriptPage & { error?: string } = await response.json();
+        if (!response.ok) throw new Error(value.error || 'Could not load history');
+        if (controller.signal.aborted) return;
+        const element = Array.from(marker.parentElement!.querySelectorAll('.turn, .raw-entry'))
+          .find((entry) => entry.getBoundingClientRect().bottom > root.getBoundingClientRect().top);
+        if (element) anchor.current = { element, top: element.getBoundingClientRect().top };
+        setHistory((previous) => ({ query, page: { ...value,
+          items: mergeItems(value.items, previous.query === query ? previous.page.items : []),
+        } }));
+      } catch (error) {
+        if (!controller.signal.aborted) setError((error as Error).message);
+      } finally {
+        if (!controller.signal.aborted) setBusy(false);
+      }
+    };
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) void load();
+    }, { root, rootMargin: '600px 0px 0px' });
+    const timer = query && !searched ? setTimeout(() => void load(), 250) : undefined;
+    if (!query || searched) observer.observe(marker);
+    return () => { clearTimeout(timer); observer.disconnect(); controller.abort(); };
+  }, [sessionId, history.before, query, searched, retry]);
+
+  const projection: Projection = query
+    ? { ...props.projection, ...history, partial: undefined, running: false,
+        activity: undefined, tools: {}, queue: { steering: [], followUp: [] } }
+    : { ...props.projection, ...reconcileHistory(history, props.projection) };
+  return <>
+    <div ref={sentinel} className="history-status">
+      {busy && <span role="status">Loading…</span>}
+      {error && <span className="error-notice" role="alert">{error} <button onClick={() => setRetry((value) => value + 1)}>Retry</button></span>}
+      {query && !busy && <span>{history.total} matches</span>}
+    </div>
+    <MarkdownCwd.Provider value={cwd}>
+      <TranscriptBody {...props} projection={projection} search={search} onSearch={onSearch} />
+    </MarkdownCwd.Provider>
+  </>;
+}
+
+export const Transcript = memo(function Transcript(props: TranscriptProps) {
+  const [search, setSearch] = useState('');
+  const query = props.raw ? search : '';
+  return <TranscriptHistory key={props.sessionId} {...props}
+    query={query} search={search} onSearch={setSearch} />;
+});

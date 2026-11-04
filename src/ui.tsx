@@ -31,11 +31,13 @@ export function Modal({
   children,
   onClose,
   dismissible = true,
+  className = '',
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   dismissible?: boolean;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const backdropPress = useRef<{ x: number; y: number } | null>(null);
@@ -52,7 +54,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      className="modal"
+      className={`modal ${className}`}
       aria-label={title}
       onPointerDown={(event) => {
         backdropPress.current = isBackdrop(event)

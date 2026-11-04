@@ -10,6 +10,7 @@ import { activeHistory, emptyProjection } from '../shared/transcript';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { HistoryRow } from '../shared/types';
+import type { DisplayContent } from './display-content';
 
 const cache = new Map<
   string,
@@ -79,18 +80,18 @@ export async function sessionMetadata(path: string): Promise<HistoryRow | undefi
 }
 
 // Saved history is a read-only preview, never a source of streaming tokens.
-export async function readHistory(path: string) {
-  if ((await stat(path)).size > 32 * 1024 * 1024)
-    throw new Error('Saved history exceeds the 32 MiB display limit');
-  let content = '',
-    bytes = 0;
-  for await (const chunk of createReadStream(path, { encoding: 'utf8' })) {
-    bytes += Buffer.byteLength(chunk);
-    if (bytes > 32 * 1024 * 1024)
-      throw new Error('Saved history exceeds the 32 MiB display limit');
-    content += chunk;
+export async function readHistory(path: string, display?: DisplayContent) {
+  const entries: ReturnType<typeof parseSessionEntries> = [];
+  const lines = createInterface({
+    input: createReadStream(path, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  });
+  for await (const line of lines) {
+    for (const entry of parseSessionEntries(line)) {
+      if (display && entry.type === 'message') entry.message = display.message(entry.message);
+      entries.push(entry);
+    }
   }
-  const entries = parseSessionEntries(content);
   const header = entries[0];
   if (header?.type !== 'session' || !header.id || !header.cwd)
     throw new Error('Invalid Pi session history');
@@ -104,7 +105,8 @@ export async function readHistory(path: string) {
     updatedAt: row?.updatedAt || Date.now(),
     transcript: {
       ...emptyProjection(),
-      items: activeHistory(branch, branch.at(-1)?.id ?? null),
+      items: activeHistory(branch, branch.at(-1)?.id ?? null).map((item) =>
+        display ? { ...item, message: display.message(item.message) } : item),
     },
   };
 }

@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import type { Socket } from 'node:net';
 import { PassThrough, type Readable, type Writable } from 'node:stream';
 
-export const MAX_FRAME_BYTES = 32 * 1024 * 1024;
+export const MAX_FRAME_BYTES = 512 * 1024 * 1024;
 export const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
-export function guardJsonlFrames(socket: Socket): PassThrough {
+export function guardJsonlFrames(socket: Socket, maxFrameBytes = MAX_FRAME_BYTES): PassThrough {
   const output = new PassThrough({ highWaterMark: MAX_BUFFERED_BYTES });
   let frameBytes = 0;
   socket.on('data', (chunk: Buffer) => {
@@ -13,8 +13,8 @@ export function guardJsonlFrames(socket: Socket): PassThrough {
     for (let i = 0; i < chunk.length; i++) {
       if (chunk[i] !== 10) continue;
       frameBytes += i - start + 1;
-      if (frameBytes > MAX_FRAME_BYTES) {
-        const error = new Error('Bridge JSONL frame exceeds 32 MiB');
+      if (frameBytes > maxFrameBytes) {
+        const error = new Error('Bridge JSONL frame exceeds 512 MiB');
         output.destroy(error);
         socket.destroy(error);
         return;
@@ -23,8 +23,8 @@ export function guardJsonlFrames(socket: Socket): PassThrough {
       start = i + 1;
     }
     frameBytes += chunk.length - start;
-    if (frameBytes > MAX_FRAME_BYTES) {
-      const error = new Error('Bridge JSONL frame exceeds 32 MiB');
+    if (frameBytes > maxFrameBytes) {
+      const error = new Error('Bridge JSONL frame exceeds 512 MiB');
       output.destroy(error);
       socket.destroy(error);
       return;
@@ -42,7 +42,7 @@ export class JsonlConnection {
     string,
     { resolve: (data: unknown) => void; reject: (error: Error) => void }
   >();
-  private buffer = '';
+  private buffer: string[] = [];
   private bufferedBytes = 0;
   private closed?: Error;
   onEvent: (event: unknown) => void = () => {};
@@ -51,19 +51,22 @@ export class JsonlConnection {
   constructor(
     private input: Writable,
     output: Readable,
+    maxFrameBytes = MAX_FRAME_BYTES,
   ) {
     output.setEncoding('utf8');
     output.on('data', (chunk: string) => {
       if (this.closed) return;
-      this.buffer += chunk;
-      this.bufferedBytes += Buffer.byteLength(chunk);
-      for (let end; (end = this.buffer.indexOf('\n')) !== -1; ) {
-        const line = this.buffer.slice(0, end);
-        this.buffer = this.buffer.slice(end + 1);
-        const bytes = Buffer.byteLength(line);
-        this.bufferedBytes -= bytes + 1;
-        if (bytes > MAX_FRAME_BYTES)
-          return this.close(new Error('RPC record exceeds 32 MiB'));
+      let start = 0;
+      for (let end; (end = chunk.indexOf('\n', start)) !== -1; ) {
+        const part = chunk.slice(start, end);
+        this.bufferedBytes += Buffer.byteLength(part);
+        if (this.bufferedBytes > maxFrameBytes)
+          return this.close(new Error('RPC record exceeds 512 MiB'));
+        this.buffer.push(part);
+        const line = this.buffer.join('');
+        this.buffer = [];
+        this.bufferedBytes = 0;
+        start = end + 1;
         if (!line.trim()) continue;
         let record;
         try {
@@ -98,8 +101,12 @@ export class JsonlConnection {
             );
         } else this.onEvent(record);
       }
-      if (this.bufferedBytes > 32 * 1024 * 1024)
-        this.close(new Error('RPC record exceeds 32 MiB'));
+      if (this.closed) return;
+      const remaining = chunk.slice(start);
+      if (remaining) this.buffer.push(remaining);
+      this.bufferedBytes += Buffer.byteLength(remaining);
+      if (this.bufferedBytes > maxFrameBytes)
+        this.close(new Error('RPC record exceeds 512 MiB'));
     });
     output.on('end', () => this.close(new Error('Backend disconnected')));
     output.on('error', (error) => this.close(error));
@@ -147,7 +154,7 @@ export class JsonlConnection {
   close(error = new Error('Connection closed')) {
     if (this.closed) return;
     this.closed = error;
-    this.buffer = '';
+    this.buffer = [];
     this.bufferedBytes = 0;
     for (const request of this.pending.values()) request.reject(error);
     this.pending.clear();

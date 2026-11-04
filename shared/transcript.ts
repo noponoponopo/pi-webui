@@ -182,7 +182,7 @@ export function applyEvent(previous: Projection, event: PiEvent): Projection {
       next.items = [
         ...next.items,
         {
-          id: `live-${next.items.length}-${event.message.timestamp}`,
+          id: `live-${previous.total ?? next.items.length}-${event.message.timestamp}`,
           message: event.message,
         },
       ];

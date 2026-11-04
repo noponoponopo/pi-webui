@@ -41,6 +41,8 @@ test('attaching preserves a live CLI and resumes its history after it closes', a
     await runtime.ready;
     expect(runtime.state.error).toBeUndefined();
     expect(runtime.state.connected).toBe(true);
+    const prompt = await runtime.session!.extensionRunner.emitBeforeAgentStart('test', undefined, { cwd: root });
+    expect(prompt.systemPromptOptions.sections.pi_webui).toContain('`mermaid`');
     expect(runtime.transcript.items[0]?.message).toMatchObject({
       role: 'user', content: [{ type: 'text', text: 'Saved CLI message' }],
     });

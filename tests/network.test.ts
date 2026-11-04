@@ -15,7 +15,9 @@ test('Tailscale HTTPS origin works while other hosts and cross-site requests are
     await app.ready;
     const url = `http://127.0.0.1:${app.server.port}/api/health`;
     const request = (headers: Record<string, string> = {}) => fetch(url, { headers });
-    expect((await request()).status).toBe(200);
+    const response = await request();
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toContain("img-src 'self' data: blob: http: https:");
     expect((await request({ Host: new URL(origin).host, Origin: origin })).status).toBe(200);
     expect((await request({ Origin: origin })).status).toBe(200);
     expect((await request({ Host: 'attacker.example' })).status).toBe(403);

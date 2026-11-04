@@ -1,4 +1,8 @@
 import { expect, test } from 'bun:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readHistory } from '../server/history';
 import { piStream } from '../server/index';
 import { applyEvent, emptyProjection, mergeMessageDeltas, reconcileSnapshot } from '../shared/transcript';
 import type { Message, PiEvent, PiUpdate, PiSnapshot } from '../shared/types';
@@ -101,4 +105,40 @@ test('canonical snapshots reuse only messages whose complete contents are unchan
   expect(result.transcript.items[1]).toBe(changed.transcript.items[1]);
   const branch = { ...changed, transcript: { ...changed.transcript, items: changed.transcript.items.slice(0, 1) } };
   expect(reconcileSnapshot(previous, branch)).toEqual(branch);
+});
+
+test('history and SSE preserve sessions larger than 32 MiB, including images', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-webui-history-'));
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const image = { type: 'image', mimeType: 'image/png', data: 'A'.repeat(33 * 1024 * 1024) };
+    const file = join(root, 'session.jsonl');
+    await writeFile(file, [
+      { type: 'session', version: 3, id: 'large', cwd: root },
+      { type: 'message', id: 'first', parentId: null, timestamp: '2025-01-01T00:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'Keep the whole history' }, image], timestamp: 1 } },
+      { type: 'message', id: 'last', parentId: 'first', timestamp: '2025-01-01T00:00:01Z',
+        message: { ...message, content: [{ type: 'text', text: 'Still visible' }] } },
+    ].map((entry) => JSON.stringify(entry)).join('\n') + '\ninvalid trailing record');
+    const saved = await readHistory(file);
+    expect(saved.transcript.items).toHaveLength(2);
+    let send!: (update: PiUpdate) => void;
+    let cleaned = false;
+    reader = piStream((listener) => {
+      send = listener;
+      return () => { cleaned = true; };
+    }).body!.getReader();
+    const next = reader.read();
+    send({ kind: 'snapshot', value: { state: {} as PiSnapshot['state'], transcript: saved.transcript } });
+    const frame = new TextDecoder().decode((await next).value);
+    expect(frame.startsWith('data: ')).toBe(true);
+    const update = JSON.parse(frame.slice(6)) as Extract<PiUpdate, { kind: 'snapshot' }>;
+    expect(update.value.transcript).toEqual(saved.transcript);
+    expect(cleaned).toBe(false);
+    await reader.cancel();
+    expect(cleaned).toBe(true);
+  } finally {
+    await reader?.cancel();
+    await rm(root, { recursive: true, force: true });
+  }
 });

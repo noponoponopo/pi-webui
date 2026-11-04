@@ -15,7 +15,7 @@ export function WorkspacePathInput({ value, onChange }: {
   const directory = slash < 0 ? "" : value.slice(0, slash + 1);
   const prefix = value.slice(slash + 1);
   const choices = suggest && listing?.directory === directory
-    ? listing.names.filter((name) => name.startsWith(prefix))
+    ? listing.names.filter((name) => name.toLowerCase().startsWith(prefix.toLowerCase()))
     : [];
 
   useEffect(() => {

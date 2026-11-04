@@ -5,7 +5,6 @@ import { connect, createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 import {
-  applyEvent,
   completionPreview,
   emptyProjection,
 } from "../shared/transcript";
@@ -25,6 +24,8 @@ import {
   MAX_FRAME_BYTES,
 } from "./jsonl";
 import { readHistory } from "./history";
+import type { DisplayContent } from "./display-content";
+import { applyDisplayEvent } from "../shared/display";
 
 export { MAX_BUFFERED_BYTES, MAX_FRAME_BYTES };
 
@@ -102,6 +103,7 @@ export class CliBridge {
     socketPath?: string,
     isOwned?: (file: string) => boolean,
     private readonly attachSdk?: (file: string) => Promise<SharedSession>,
+    private readonly display?: DisplayContent,
   ) {
     const configured = socketPath ?? process.env.PI_WEBUI_SOCKET;
     const dataDir = process.env.PI_WEBUI_DATA_DIR
@@ -152,7 +154,7 @@ export class CliBridge {
     const path = canonicalFile(file);
     const existing = this.byFile(path);
     if (existing) return existing;
-    const saved = await readHistory(path);
+    const saved = await readHistory(path, this.display);
     // A native hello may have arrived while the preview was being read.
     const attached = this.byFile(path);
     if (attached) return attached;
@@ -173,6 +175,7 @@ export class CliBridge {
       saved.name,
       () => this.changed(),
       saved.updatedAt,
+      this.display,
     );
     runtime.setSnapshot({
       state: {
@@ -315,7 +318,7 @@ export class CliBridge {
       probe.once("error", (error) => {
         clearTimeout(timer);
         done(
-          (error as NodeJS.ErrnoException).code === "ECONNREFUSED"
+          ["ECONNREFUSED", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")
             ? "stale"
             : "unknown",
         );
@@ -423,6 +426,8 @@ export class CliBridge {
         record.cwd,
         record.name,
         () => this.changed(),
+        undefined,
+        this.display,
       );
     runtime.pid = record.pid;
     runtime.setSnapshotRequester(() => this.requestSnapshot(runtime));
@@ -508,7 +513,7 @@ export class CliBridge {
     }
     if (raw.type === "hello") {
       try {
-        peer.respond(raw, true, { connectionId: this.acceptHello(peer, raw) });
+        peer.respond(raw, true, { connectionId: this.acceptHello(peer, raw), displayDirectory: this.display?.directory });
       } catch (error) {
         peer.reject(raw, errorMessage(error));
       }
@@ -559,7 +564,7 @@ export class CliBridge {
       this.protocolError(peer, "Unknown bridge record");
       return;
     }
-    const update = raw.value as PiUpdate;
+    const update = this.display?.update(raw.value as PiUpdate) ?? raw.value as PiUpdate;
     if (update.kind === "state") {
       if (update.value.session.id !== runtime.id) {
         this.protocolError(peer, "State session identity changed");
@@ -633,6 +638,7 @@ export class CliBridge {
     }
     if (!this.updateFile(runtime, peer, snapshot.state.session.file))
       return false;
+    if (this.display) snapshot = this.display.snapshot(snapshot);
     runtime.setSnapshot({
       ...snapshot,
       state: {
@@ -725,7 +731,8 @@ class Peer {
     readonly socket: Socket,
     onEvent: (record: unknown) => void,
   ) {
-    this.rpc = new JsonlConnection(socket, guardJsonlFrames(socket));
+    // Session snapshots can exceed the command frame limit.
+    this.rpc = new JsonlConnection(socket, guardJsonlFrames(socket, Infinity), Infinity);
     this.rpc.onEvent = onEvent;
     this.rpc.onClose = () => {
       if (this.closed) return;
@@ -752,8 +759,7 @@ class Peer {
     const line = `${JSON.stringify(record)}\n`;
     const bytes = Buffer.byteLength(line);
     if (
-      bytes > MAX_FRAME_BYTES ||
-      (this.outputBytes > 0 && this.outputBytes + bytes > MAX_BUFFERED_BYTES)
+      this.outputBytes > 0 && this.outputBytes + bytes > MAX_BUFFERED_BYTES
     ) {
       this.socket.destroy(new Error("Bridge output buffer limit exceeded"));
       return;
@@ -797,6 +803,7 @@ class CliRuntime {
     name: string | undefined,
     private onChange: () => void,
     updatedAt: number = Date.now(),
+    private readonly display?: DisplayContent,
   ) {
     this.pid = pid;
     this.ready = this.readyState.promise;
@@ -870,7 +877,7 @@ class CliRuntime {
   private async readSavedPreview(): Promise<void> {
     const file = this.state.session.file;
     if (!file) return;
-    const saved = await readHistory(file);
+    const saved = await readHistory(file, this.display);
     if (this.connection) return;
     this.setSnapshot({
       state: {
@@ -937,7 +944,7 @@ class CliRuntime {
       }
     }
     if (this.listeners.size) {
-      this.transcript = applyEvent(this.transcript, event);
+      this.transcript = applyDisplayEvent(this.transcript, event, Infinity);
       return;
     }
     let running = this.transcript.running;
@@ -1043,6 +1050,8 @@ class CliRuntime {
         "compact",
         "get_entries",
         "get_tree",
+        "get_history_tree",
+        "get_history_entry",
         "navigate_tree",
         "fork",
       ].includes(type)
@@ -1054,7 +1063,7 @@ class CliRuntime {
           : `Unsupported native CLI command: ${type}`,
       );
     if (Buffer.byteLength(JSON.stringify(command)) > MAX_FRAME_BYTES)
-      throw new Error("Native CLI command exceeds 32 MiB");
+      throw new Error("Native CLI command exceeds 512 MiB");
     this.commandInFlight = command.type;
     try {
       return await this.connection.rpc.request(

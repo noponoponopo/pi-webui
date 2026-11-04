@@ -13,7 +13,8 @@
   --faint: #747474;
   --border: #dedede;
   --accent: #365fb6;
-  --button: #e3e3e3;
+  --on-accent: #fff;
+  --button: #e8e8e8;
   --error: #b52d36;
   --green: #327944;
   --purple: #72509e;
@@ -35,7 +36,8 @@
   --faint: #979797;
   --border: #353535;
   --accent: #80a2fa;
-  --button: #434343;
+  --on-accent: #141414;
+  --button: #353535;
   --error: #f4959b;
   --green: #7ac78b;
   --purple: #b99ada;
@@ -192,8 +194,9 @@ svg {
   min-height: 39px;
   border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
   background: var(--button);
-  border-radius: 10px;
-  font-size: 15px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
 }
 .sidebar-section {
   display: flex;
@@ -252,7 +255,7 @@ svg {
   background: var(--hover);
 }
 .workspace > summary svg {
-  color: var(--accent);
+  color: var(--muted);
 }
 .workspace > summary > span {
   overflow: hidden;
@@ -507,8 +510,8 @@ main {
 .composer {
   background: var(--surface);
   border: 1px solid color-mix(in srgb, var(--text) 5%, transparent);
-  border-radius: 20px;
-  padding: 11px 8px 8px;
+  border-radius: 12px;
+  padding: 12px 8px 8px;
   position: relative;
 }
 .composer textarea {
@@ -526,6 +529,9 @@ main {
 }
 .composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.is-file-dragging .composer {
+  border-color: var(--accent);
 }
 .composer-toolbar {
   display: flex;
@@ -574,13 +580,13 @@ main {
   height: 35px;
   border-radius: 50%;
   padding: 0;
-  color: white;
-  background: #7197f2;
+  color: var(--on-accent);
+  background: var(--accent);
   margin-left: 6px;
   flex: 0 0 auto;
 }
 .send-button:hover:not(:disabled) {
-  background: #638beb;
+  background: color-mix(in srgb, var(--accent) 85%, var(--text));
 }
 .send-button:disabled {
   opacity: 0.4;
@@ -722,22 +728,6 @@ main {
 .pending-message {
   margin-top: 14px;
 }
-.session-tree-list {
-  overflow: auto;
-  max-height: 60vh;
-}
-.session-tree-entry {
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-}
-.session-tree-entry pre {
-  white-space: pre-wrap;
-  margin: 6px 0;
-  font: 12px/1.5 var(--mono);
-}
-.session-tree-entry button {
-  margin-right: 8px;
-}
 .jump-bottom {
   position: absolute;
   top: -35px;
@@ -756,7 +746,6 @@ main {
   min-height: 0;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
-  overflow-anchor: none;
 }
 .chat-column {
   width: min(calc(100% - 64px), var(--chat-width));
@@ -765,6 +754,8 @@ main {
 }
 .turn {
   margin-bottom: 24px;
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 300px;
 }
 .user-message {
   margin: 9px 0 25px;
@@ -774,7 +765,7 @@ main {
 }
 .user-bubble {
   background: var(--surface);
-  border-radius: 18px;
+  border-radius: 12px;
   padding: 9px 16px;
   max-width: 90%;
   overflow-wrap: anywhere;
@@ -886,6 +877,24 @@ main {
   white-space: pre;
   font-size: 13px;
   line-height: 1.75;
+}
+.mermaid-diagram {
+  --pele-bg: var(--sidebar);
+  --pele-fg: var(--text);
+  --pele-muted: var(--muted);
+  --pele-line: var(--text);
+  --pele-surface: var(--surface);
+  --pele-surface-alt: var(--hover);
+  --pele-border: var(--muted);
+  --pele-accent: var(--accent);
+  --pele-error: var(--error);
+  min-width: 0;
+}
+.mermaid-diagram:not(:empty) {
+  padding: 16px;
+}
+.mermaid-diagram:has(.pele-zoom) {
+  min-height: 100px;
 }
 .hljs-keyword,
 .hljs-selector-tag,
@@ -1010,12 +1019,14 @@ main {
   font-size: 13px;
   color: var(--muted);
 }
-.load-older {
-  display: flex;
-  margin: 4px auto 16px;
-  color: var(--muted);
+.history-status {
+  min-height: 20px;
+  text-align: center;
   font-size: 12px;
+  color: var(--muted);
+  overflow-anchor: none;
 }
+.deferred-image { max-width: 100%; }
 .transcript-scroll .raw {
   background: var(--raised);
   min-height: 100%;
@@ -1249,7 +1260,7 @@ main {
 }
 .primary {
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
 }
 .primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 85%, var(--text));
@@ -1442,6 +1453,11 @@ main {
     width: calc(100% - 48px);
   }
 }
+@media (pointer: coarse) {
+  .composer textarea {
+    font-size: 16px;
+  }
+}
 @media (max-width: 760px) {
   .app,
   .app.sidebar-open,
@@ -1485,7 +1501,7 @@ main {
     padding: 8px 10px 0;
   }
   .composer {
-    border-radius: 17px;
+    border-radius: 12px;
     padding: 9px 7px 7px;
   }
   .composer-toolbar {

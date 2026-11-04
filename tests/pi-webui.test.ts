@@ -4,7 +4,7 @@ import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { claimSessionFile } from '../server/ownership';
-import { JsonlConnection } from '../server/jsonl';
+import { JsonlConnection, guardJsonlFrames } from '../server/jsonl';
 import piWebUI from '../extensions/pi-webui';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -12,7 +12,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function checkBridgeIsolation() {
   const previousSocket = process.env.PI_WEBUI_SOCKET;
   try {
-    for (const fault of ['offline', 'web-owner', 'cli-owner', 'late-owner', 'invalid-lease', 'lost-lease', 'startup-error', 'hello-error', 'bridge-error', 'invalid-json', 'disconnect', 'timestamps']) {
+    for (const fault of ['offline', 'web-owner', 'cli-owner', 'late-owner', 'invalid-lease', 'lost-lease', 'startup-error', 'hello-error', 'bridge-error', 'invalid-json', 'disconnect', 'timestamps', 'large-snapshot']) {
       const root = mkdtempSync('/tmp/pi-webui-');
       const file = join(root, 'session.jsonl');
       const socketPath = join(root, 'bridge.sock');
@@ -25,6 +25,7 @@ async function checkBridgeIsolation() {
       const custom = mock(() => Promise.resolve());
       const shutdown = mock(() => {});
       const notify = mock(() => {});
+      const largeText = fault === 'large-snapshot' ? 'x'.repeat(33 * 1024 * 1024) : '';
       const ctx = {
         mode: 'tui', isIdle: () => false, abort, shutdown,
         ui: { custom, notify },
@@ -39,7 +40,11 @@ async function checkBridgeIsolation() {
             type: 'message', id: 'old-message', parentId: null,
             timestamp: '2025-01-02T03:04:05.000Z',
             message: { role: 'user', content: 'Old conversation', timestamp: Date.parse('2025-01-02T03:04:05.000Z') },
-          }] : [], getLeafId: () => null,
+          }] : largeText ? [{
+            type: 'message', id: 'large', parentId: null,
+            timestamp: '2025-01-02T03:04:05.000Z',
+            message: { role: 'user', content: largeText, timestamp: 1 },
+          }] : [], getLeafId: () => largeText ? 'large' : null,
           getCwd: () => root, getSessionName: () => undefined,
         },
       } as unknown as ExtensionContext;
@@ -62,15 +67,18 @@ async function checkBridgeIsolation() {
       const server = createServer((socket) => {
         sockets.add(socket);
         socket.on('close', () => sockets.delete(socket));
-        const rpc = new JsonlConnection(socket, socket);
+        const rpc = new JsonlConnection(socket, guardJsonlFrames(socket, Infinity), Infinity);
         bridgeRpc = rpc;
         rpc.onEvent = (record: any) => {
           if (record.type === 'hello') {
             if (fault === 'invalid-json') { socket.write('invalid json\n'); return; }
             void rpc.write(fault === 'hello-error'
               ? { id: record.id, type: 'response', success: false, error: 'Session already owned by Web' }
-              : { id: record.id, type: 'response', success: true, data: { connectionId: 'test' } });
+              : { id: record.id, type: 'response', success: true, data: { connectionId: 'test', displayDirectory: root } });
           } else if (record.type === 'snapshot') {
+            if (largeText) {
+              expect(record.value.transcript.items[0].message.content).toBe(largeText);
+            }
             snapshotReceived = true;
             snapshotTimes.push(record.value.state.session.updatedAt);
             if (fault === 'bridge-error') void rpc.write({ type: 'bridge_error', error: 'Session file already owned' });
@@ -84,13 +92,18 @@ async function checkBridgeIsolation() {
           otherClaim = claimSessionFile(file, leases, fault === 'cli-owner' ? 'cli' : 'web');
           if (fault === 'invalid-lease') writeFileSync(join(leases, readdirSync(leases)[0]), '{');
         }
-        if (['hello-error', 'bridge-error', 'invalid-json', 'disconnect', 'timestamps'].includes(fault))
+        if (['hello-error', 'bridge-error', 'invalid-json', 'disconnect', 'timestamps', 'large-snapshot'].includes(fault))
           await new Promise<void>((resolve) => server.listen(socketPath, resolve));
         piWebUI(pi);
         await emit('session_start', { reason: 'startup' });
         if (server.listening) {
-          for (let i = 0; i < 100 && !snapshotReceived && !notify.mock.calls.length; i++) await sleep(10);
+          for (let i = 0; i < (largeText ? 1000 : 100) && !snapshotReceived && !notify.mock.calls.length; i++) await sleep(10);
           if (['bridge-error', 'disconnect'].includes(fault)) expect(snapshotReceived).toBe(true);
+        }
+        if (fault === 'large-snapshot') {
+          expect(snapshotReceived, JSON.stringify(notify.mock.calls)).toBe(true);
+          await bridgeRpc!.request({ type: 'snapshot_request' });
+          expect(snapshotTimes).toHaveLength(2);
         }
         if (fault === 'timestamps') {
           expect(snapshotReceived).toBe(true);
@@ -105,6 +118,12 @@ async function checkBridgeIsolation() {
           expect(snapshotTimes.at(-1)).toBe(updatedAt);
         }
         await sleep(30);
+        if (fault === 'offline' || fault === 'timestamps') {
+          const systemPromptOptions = { sections: {} as Record<string, string> };
+          await emit('before_agent_start', { systemPromptOptions });
+          if (fault === 'timestamps') expect(systemPromptOptions.sections.pi_webui).toContain('`mermaid`');
+          else expect(systemPromptOptions.sections.pi_webui).toBeUndefined();
+        }
         if (fault === 'late-owner') sessionFile = file;
         if (fault === 'lost-lease') {
           const path = join(leases, readdirSync(leases)[0]);
@@ -141,5 +160,5 @@ if (process.argv.includes('--bridge-check')) {
     const child = Bun.spawn([process.execPath, import.meta.filename, '--bridge-check'], { stdout: 'ignore', stderr: 'pipe' });
     const error = await new Response(child.stderr).text();
     expect(await child.exited, error).toBe(0);
-  });
+  }, 15_000);
 }

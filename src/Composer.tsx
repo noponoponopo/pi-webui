@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, LoaderCircle, Paperclip, Square } from "lucide-react";
 import type { PendingSelection } from "../shared/types";
 import { ErrorNotice, IconButton } from "./ui";
@@ -6,6 +6,7 @@ import { isSendKey, type SendShortcut } from "./preferences";
 import type { FileDirectory, FileEntry } from "../shared/git";
 import { api } from "./api";
 import { completeFile, fileQuery, matchingFiles } from "./composer-text";
+import { uploadFile } from "./upload";
 
 export function Composer({
   id,
@@ -20,6 +21,8 @@ export function Composer({
   placeholder = "Message or run a task, / commands",
   commands = [],
   prefill,
+  dropped,
+  draggingFiles,
   cwd,
   sendShortcut = "mod-enter",
 }: {
@@ -35,6 +38,8 @@ export function Composer({
   placeholder?: string;
   commands?: { name: string; description?: string }[];
   prefill?: { id: string; text: string; append?: boolean };
+  dropped?: { id: string; files: File[]; containsDirectory: boolean };
+  draggingFiles?: boolean;
   cwd?: string;
   sendShortcut?: SendShortcut;
 }) {
@@ -42,6 +47,8 @@ export function Composer({
     () => sessionStorage.getItem(`draft:${id}`) || "",
   );
   const [picking, setPicking] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const uploadController = useRef<AbortController | undefined>(undefined);
   const [pending, setPending] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const restoreInFlight = useRef(false);
@@ -190,6 +197,50 @@ export function Composer({
     if (choices.length) choose(choices[selection]?.name ?? choices[0].name);
     else if (fileChoices.length) chooseFile(fileChoices[selection] ?? fileChoices[0]);
   };
+  const insertPaths = (paths: string[]) => {
+    if (!input.current) return;
+    const text = [input.current.value, ...paths].filter(Boolean).join("\n");
+    sessionStorage.setItem(`draft:${id}`, text);
+    caret.current = text.length;
+    setDraft(text);
+    setCursor(text.length);
+  };
+  useLayoutEffect(() => () => uploadController.current?.abort(), []);
+  useLayoutEffect(() => {
+    if (!dropped) return;
+    if (disabled || pending || picking || restoring || uploadController.current) {
+      setError("Wait until the composer is ready to drop files.");
+      return;
+    }
+    if (dropped.containsDirectory || !dropped.files.length) {
+      setError("Drop files rather than folders.");
+      return;
+    }
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setPicking(true);
+    setUploading(true);
+    setError("");
+    void (async () => {
+      let currentFile = "";
+      try {
+        for (const file of dropped.files) {
+          currentFile = file.name;
+          const path = await uploadFile(file, controller.signal);
+          if (controller.signal.aborted) return;
+          insertPaths([path]);
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) setError(`${currentFile}: ${(error as Error).message}`);
+      } finally {
+        uploadController.current = undefined;
+        if (!controller.signal.aborted) {
+          setPicking(false);
+          setUploading(false);
+        }
+      }
+    })();
+  }, [dropped?.id]);
   const attach = async () => {
     if (!cwd || disabled || pending || picking || restoring) return;
     setPicking(true);
@@ -197,10 +248,7 @@ export function Composer({
     try {
       const paths = await api<string[]>("/files/pick", { cwd });
       if (!paths.length) return;
-      const text = [input.current?.value || "", ...paths].filter(Boolean).join("\n");
-      caret.current = text.length;
-      setDraft(text);
-      setCursor(text.length);
+      insertPaths(paths);
     } catch (error) {
       setError((error as Error).message);
     } finally {
@@ -212,17 +260,7 @@ export function Composer({
   return (
     <div className="composer-wrap">
       <ErrorNotice error={error || (token ? fileError : "")} />
-      <div
-        className="composer"
-        onDragOver={(event) => {
-          if (event.dataTransfer.types.includes("Files")) event.preventDefault();
-        }}
-        onDrop={(event) => {
-          if (!event.dataTransfer.files.length) return;
-          event.preventDefault();
-          setError("Use Attach files to insert the original file paths, or paste the paths as text.");
-        }}
-      >
+      <div className="composer">
         {choices.length > 0 && (
           <div className="command-list" role="listbox" aria-label="Commands">
             {choices.map((command, index) => (
@@ -324,7 +362,10 @@ export function Composer({
               {picking ? <LoaderCircle size={19} className="spin" /> : <Paperclip size={19} />}
             </IconButton>
           )}
-          <div className="composer-options">{toolbar}</div>
+          <div className="composer-options">
+            {draggingFiles ? <span className="muted" role="status">Drop files to add copies</span>
+              : uploading ? <span className="muted" role="status">Uploading files…</span> : toolbar}
+          </div>
           {running && onStop && (
             <IconButton
               label="Stop"

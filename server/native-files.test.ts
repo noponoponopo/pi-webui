@@ -2,6 +2,7 @@ import { expect, spyOn, test } from 'bun:test';
 import { execFile, type ExecFileOptions } from 'node:child_process';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
+import { pathToFileURL } from 'node:url';
 
 const nativeExec = execFile as unknown as Record<symbol, (
   command: string, args: string[], options?: ExecFileOptions,
@@ -55,6 +56,25 @@ test('file selection returns original paths without reading files, including can
       expect(await pickFiles(cwd)).toEqual([]);
       failure = true;
       await expect(pickFiles(cwd)).rejects.toThrow('Picker failed');
+    }
+  } finally {
+    exec.mockRestore();
+    exec.mockImplementation(originalExec);
+    Object.defineProperty(process, 'platform', { value: platform });
+  }
+});
+
+test('local file links open through the OS without shell interpolation', async () => {
+  const platform = process.platform;
+  const originalExec = nativeExec[promisify.custom];
+  const exec = spyOn(nativeExec, promisify.custom).mockResolvedValue({ stdout: '', stderr: '' });
+  try {
+    const { openFile } = await import(`${import.meta.dir}/native-files.ts?open-test`);
+    const url = `${pathToFileURL(import.meta.path).href}#preview`;
+    for (const [value, command] of [['darwin', 'open'], ['win32', 'explorer.exe'], ['linux', 'xdg-open']]) {
+      Object.defineProperty(process, 'platform', { value });
+      await openFile(url);
+      expect(exec).toHaveBeenLastCalledWith(command, [url], { timeout: 15_000, windowsHide: true });
     }
   } finally {
     exec.mockRestore();

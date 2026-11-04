@@ -1,5 +1,11 @@
 import { dirname, join, resolve, sep } from 'node:path';
 import { CliBridge } from './bridge';
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { DisplayContent } from './display-content';
+import { displayResponse } from './display-response';
+import { transcriptPage } from '../shared/display';
 import { canonicalFile } from './ownership';
 import type { RpcExtensionUIResponse } from '@earendil-works/pi-coding-agent';
 import type {
@@ -27,7 +33,8 @@ import {
   switchGitBranch,
 } from './git';
 import { listenLocal, publishRuntime, stateDirectory } from './local-runtime';
-import { pickFiles } from './native-files';
+import { openFile, pickFiles } from './native-files';
+import { Uploads } from './uploads';
 
 type Body = Record<string, unknown>;
 function text(body: Body, key: string, empty = false, max = 100_000): string {
@@ -88,7 +95,10 @@ export function piCommand(body: Body): PiCommand {
       };
     case 'get_tree':
     case 'get_fork_messages':
+    case 'get_history_tree':
       return { type: body.type };
+    case 'get_history_entry':
+      return { type: 'get_history_entry', entryId: text(body, 'entryId', false, 200) };
     case 'navigate_tree':
       return {
         type: 'navigate_tree',
@@ -177,18 +187,6 @@ export function stream<T>(
       start(controller) {
         const write = (frame: string) => {
           if (closed) return;
-          if (Buffer.byteLength(frame) > 32 * 1024 * 1024) {
-            controller.enqueue(
-              encoder.encode(
-                'event: stream_error\ndata: "Session data exceeds the 32 MiB display limit. Open this history in the CLI."\n\n',
-              ),
-            );
-            closed = true;
-            cleanup();
-            clearInterval(heartbeat);
-            controller.close();
-            return;
-          }
           // Discard the backlog; slow readers reconnect from an authoritative snapshot.
           if ((controller.desiredSize ?? 0) < 0) {
             closed = true;
@@ -316,10 +314,12 @@ export function startServer(
   if (publicURL && (publicURL.protocol !== 'https:' || publicURL.origin !== publicOrigin))
     throw new Error('PI_WEBUI_PUBLIC_ORIGIN must be an HTTPS origin without a trailing slash');
   const dataDir = options.dataDir ?? stateDirectory();
+  const uploads = new Uploads(resolve(dataDir, 'uploads'));
   const bridgeSocket =
     options.bridgeSocket ??
     process.env.PI_WEBUI_SOCKET ??
     join(dataDir, 'bridge.sock');
+  const display = new DisplayContent(mkdtempSync(join(tmpdir(), 'pi-webui-content-')));
   const resuming = new Set<string>();
   const pi: PiSessions = new PiSessions(new Store(dataDir), {
     agentDir: options.agentDir,
@@ -348,6 +348,7 @@ export function startServer(
         },
       };
     },
+    display,
   );
   const catalogListeners = new Set<(serialized: string) => void>();
   pi.onChange = bridge.onChange = () => {
@@ -439,7 +440,7 @@ export function startServer(
         response.headers.set('Referrer-Policy', 'no-referrer');
         response.headers.set(
           'Content-Security-Policy',
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         );
         return response;
       } catch (error) {
@@ -495,14 +496,31 @@ export function startServer(
         }, (serialized) => serialized);
       }
       if (path === '/api/pi/history') return Response.json(await pi.history());
+      const content = path.match(/^\/api\/pi\/content\/([^/]+)$/);
+      if (content) return displayResponse(display.directory, content[1]);
+      const messages = path.match(/^\/api\/pi\/([^/]+)\/messages$/);
+      if (messages) {
+        const runtime = await runtimeFor(decodeURIComponent(messages[1]));
+        const query = url.searchParams.get('q') ?? '';
+        if (query.length > 200) throw new Error('Search is limited to 200 characters');
+        const items = runtime.snapshot().transcript.items;
+        const page = transcriptPage(query ? await display.search(items, query, request.signal) : items, url.searchParams.get('before') ?? undefined);
+        return Response.json({ ...page, items: page.items.map((item) => ({ ...item, message: display.message(item.message) })) });
+      }
       const match = path.match(/^\/api\/pi\/([^/]+)\/stream$/);
       if (match) {
         const runtime = await runtimeFor(decodeURIComponent(match[1]));
         return piStream((send) => {
-          if ('subscribe' in runtime) return runtime.subscribe(send);
-          runtime.listeners.add(send);
-          send({ kind: 'snapshot', value: runtime.snapshot() });
-          return () => runtime.listeners.delete(send);
+          const deliver = (update: PiUpdate) => {
+            if (update.kind === 'snapshot') update = { ...update, value: {
+              ...update.value, transcript: { ...update.value.transcript, ...transcriptPage(update.value.transcript.items) },
+            } };
+            send(display.update(update));
+          };
+          if ('subscribe' in runtime) return runtime.subscribe(deliver);
+          runtime.listeners.add(deliver);
+          deliver({ kind: 'snapshot', value: runtime.snapshot() });
+          return () => runtime.listeners.delete(deliver);
         });
       }
       const terminalStream = path.match(/^\/api\/terminals\/([^/]+)\/stream$/);
@@ -512,11 +530,21 @@ export function startServer(
         );
     }
     if (request.method === 'POST') {
+      if (path === '/api/files/upload')
+        return Response.json(await uploads.write(request, url));
       if (!request.headers.get('content-type')?.startsWith('application/json'))
         return new Response('JSON required', { status: 415 });
       const body: Body = await request.json();
       if (!body || typeof body !== 'object' || Array.isArray(body))
         throw new Error('Invalid request');
+      if (path === '/api/files/upload/cancel') {
+        await uploads.cancel(text(body, 'id', false, 36));
+        return Response.json({ ok: true });
+      }
+      if (path === '/api/files/open') {
+        await openFile(text(body, 'url', false, 4096));
+        return Response.json({ ok: true });
+      }
       if (path === '/api/files/pick')
         return Response.json(await pickFiles(text(body, 'cwd', false, 4096)));
       if (path === '/api/files/file' || path === '/api/git/file')
@@ -747,6 +775,8 @@ export function startServer(
       await bridge.stop();
       await terminals.stop();
       await pi.stop();
+      await uploads.stop();
+      await rm(display.directory, { recursive: true, force: true });
     },
   };
 }

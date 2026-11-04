@@ -2,7 +2,7 @@ import type { Message, TranscriptItem } from './types';
 
 export type ChatTurn = { id: string; user?: Message; items: TranscriptItem[] };
 export type ChatStep =
-  | { id: string; kind: 'thinking' | 'text'; text: string }
+  | { id: string; kind: 'thinking' | 'text'; text: string; message?: Message }
   | { id: string; kind: 'context'; message: Message }
   | {
       id: string;
@@ -11,6 +11,7 @@ export type ChatStep =
       args: unknown;
       callId: string;
       result?: Message;
+      source?: Message;
     };
 
 export function chatTurns(items: TranscriptItem[]): ChatTurn[] {
@@ -56,9 +57,9 @@ export function presentTurn(turn: ChatTurn, partial?: Message) {
       message.content.forEach((block, index) => {
         const key = `${id}-${index}`;
         if (block.type === 'thinking')
-          steps.push({ id: key, kind: 'thinking', text: block.thinking });
+          steps.push({ id: key, kind: 'thinking', text: block.thinking, message });
         if (block.type === 'text' && message !== answer && block.text)
-          steps.push({ id: key, kind: 'text', text: block.text });
+          steps.push({ id: key, kind: 'text', text: block.text, message });
         if (block.type === 'toolCall') {
           calls.add(block.id);
           steps.push({
@@ -66,6 +67,7 @@ export function presentTurn(turn: ChatTurn, partial?: Message) {
             kind: 'tool',
             name: block.name,
             args: block.arguments,
+            source: message,
             callId: block.id,
             result: results.get(block.id),
           });

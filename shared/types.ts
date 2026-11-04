@@ -14,7 +14,9 @@ export type PiCommand =
   | Exclude<RpcCommand, { type: "fork" | "clear_queue" }>
   | { type: "clear_queue"; from?: PendingSelection }
   | (Extract<RpcCommand, { type: "fork" }> & { position?: "before" | "at" })
-  | { type: "navigate_tree"; targetId: string };
+  | { type: "navigate_tree"; targetId: string }
+  | { type: "get_history_tree" }
+  | { type: "get_history_entry"; entryId: string };
 type MessageUpdate = Extract<JsonAgentSessionEvent, { type: "message_update" }>;
 export type PiEvent =
   | Exclude<JsonAgentSessionEvent, MessageUpdate>
@@ -70,8 +72,11 @@ export type ToolProgress = {
   error?: boolean;
   running: boolean;
 };
+export type TranscriptPage = { items: TranscriptItem[]; before?: string; total: number };
 export type Projection = {
   items: TranscriptItem[];
+  before?: string;
+  total?: number;
   partial?: Message;
   running: boolean;
   activity?: string;

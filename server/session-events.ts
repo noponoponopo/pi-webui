@@ -4,6 +4,19 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import type { Usage } from '@earendil-works/pi-ai';
 import type { PiEvent, PiState } from '../shared/types';
+import { checkpointText, historyText, historyTree } from '../shared/session-tree';
+
+export function sessionHistory(manager: Pick<SessionManager, 'getEntries' | 'getLeafId'>) {
+  return historyTree(manager.getEntries(), manager.getLeafId());
+}
+
+export function sessionHistoryEntry(manager: Pick<SessionManager, 'getEntry'>, id: string) {
+  const entry = manager.getEntry(id);
+  if (!entry) throw new Error(`Entry ${id} not found`);
+  const text = historyText(entry);
+  return { text: text || (entry.type !== 'custom_message' && !(entry.type === 'message' &&
+    (entry.message.role === 'user' || entry.message.role === 'assistant')) ? checkpointText(entry) : '') };
+}
 
 const sessionEventTypes = new Set<string>([
   'agent_start',

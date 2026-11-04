@@ -42,7 +42,8 @@ import type {
 import { listHistory, sessionMetadata } from "./history";
 import { noColorTheme, SdkUI } from "./sdk-ui";
 import { directory, Store } from "./store";
-import { sessionEntries, toPiEvent } from "./session-events";
+import { sessionEntries, sessionHistory, sessionHistoryEntry, toPiEvent } from "./session-events";
+import { addWebUIPrompt } from "../shared/webui-prompt";
 
 export type PiSessionsOptions = {
   isOwned?: (file: string) => boolean;
@@ -223,6 +224,10 @@ class PiRuntime {
     switch (command.type) {
       case "get_entries":
         return sessionEntries(this.sessionManager, command.since);
+      case "get_history_tree":
+        return sessionHistory(this.sessionManager);
+      case "get_history_entry":
+        return sessionHistoryEntry(this.sessionManager, command.entryId);
       case "get_tree":
         return {
           tree: this.sessionManager.getTree(),
@@ -231,6 +236,7 @@ class PiRuntime {
       case "get_fork_messages":
         return { messages: session.getUserMessagesForForking() };
       case "fork": {
+        if (!session.isIdle) throw new Error("Wait for the current run to finish before forking");
         this.transitioning = true;
         try {
           return await this.owner.fork(this, command.entryId, command.position);
@@ -243,8 +249,7 @@ class PiRuntime {
           return { cancelled: false, leafId: command.targetId };
         if (!this.sessionManager.getEntry(command.targetId))
           throw new Error(`Entry ${command.targetId} not found`);
-        if (command.targetId !== this.sessionManager.getLeafId() && session.isStreaming)
-          await session.abort();
+        if (!session.isIdle) throw new Error("Wait for the current run to finish before navigating");
         const result = await session.navigateTree(command.targetId, {
           summarize: false,
         });
@@ -1100,6 +1105,7 @@ export class PiSessions {
         agentDir: this.agentDir,
         resourceLoaderOptions: {
           extensionFactories: [
+            (pi) => { pi.on("before_agent_start", addWebUIPrompt); },
             createCodemodeExtension(),
             createMcpExtension(),
             createToolSearchExtension(),

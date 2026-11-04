@@ -12,11 +12,12 @@ import {
 
 const root = resolve(import.meta.dir, '..');
 const [command = 'open', ...args] = process.argv.slice(2);
-const help = `pi-webui [open|start|stop|restart|status|serve|setup|disable|pack DIR]
+const help = `pi-webui [open|start|stop|restart|reboot|status|serve|setup|disable|pack DIR]
   open     Open the running UI (default); start the macOS service if needed
   start    Start the macOS background service
   stop     Stop the service; --force interrupts active Web sessions, not native CLIs
   restart  Restart the service; --force if a Web session is active
+  reboot   Build local sources and restart the service; accepts --force
   status   Print the current URL and PID
   serve    Run in the foreground (macOS/Linux)
   setup    Install CLI, Pi bridge and macOS login service; --no-start only installs
@@ -76,6 +77,20 @@ async function main() {
       await disableService(args.includes('--force'));
       console.log('Automatic startup disabled');
       return;
+    case 'reboot': {
+      if (process.platform !== 'darwin')
+        throw new Error('Automatic service management requires macOS.');
+      if (!existsSync(join(root, 'scripts/cli.ts')))
+        throw new Error('Local sources are required to rebuild. Use pi-webui restart for a prebuilt installation.');
+      const build = Bun.spawn([process.execPath, 'run', 'build'], {
+        cwd: root, stdin: 'inherit', stdout: 'inherit', stderr: 'inherit',
+      });
+      if (await build.exited !== 0)
+        throw new Error('Build failed. The service was not restarted.');
+      await stopService(args.includes('--force'));
+      console.log((await startService()).url);
+      return;
+    }
     case 'restart':
       await stopService(args.includes('--force'));
       console.log((await startService()).url);

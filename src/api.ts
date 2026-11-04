@@ -70,8 +70,10 @@ export function useStream<T>(
       next.onmessage = (event) => {
         if (halted || source !== next) return;
         const value = JSON.parse(event.data) as T;
-        if (!batchMs) update.current([value]);
-        else {
+        if (!batchMs || document.hidden) {
+          flush();
+          update.current([value]);
+        } else {
           pending.push(value);
           batch ??= setTimeout(flush, batchMs);
         }

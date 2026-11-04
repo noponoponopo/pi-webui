@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
@@ -49,6 +50,20 @@ export async function pickFiles(cwd: string): Promise<string[]> {
   } catch (error) {
     if ((error as { code?: number }).code === 1) return [];
     throw error;
+  }
+}
+
+export async function openFile(url: string): Promise<void> {
+  const file = new URL(url);
+  if (file.protocol !== 'file:' || file.host) throw new Error('Expected a local file URL');
+  const path = fileURLToPath(file);
+  await stat(path);
+  if (process.platform === 'darwin') {
+    await exec('open', [file.href], options);
+  } else if (process.platform === 'win32') {
+    await exec('explorer.exe', [file.href], options);
+  } else {
+    await exec('xdg-open', [file.href], options);
   }
 }
 

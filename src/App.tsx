@@ -434,35 +434,35 @@ export function App() {
             <PanelLeft size={19} />
           </IconButton>
         </div>
+        <div className="sidebar-section">
+          <span>Workspaces</span>
+          <IconButton
+            label="Search sessions"
+            onClick={() => {
+              setSearching(!searching);
+              setQuery("");
+            }}
+          >
+            <Search size={17} />
+          </IconButton>
+          <IconButton label="Add workspace" onClick={() => newSession()}>
+            <FolderPlus size={18} />
+          </IconButton>
+        </div>
+        {searching && (
+          <label className="sidebar-search">
+            <input
+              autoFocus
+              aria-label="Search sessions"
+              placeholder="Search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+        )}
         <div className="workspace-list">
           {catalog.filter((row) => bookmarks.includes(sessionKey(row)) && matchesQuery(row))
             .map((row) => renderSession(row, true))}
-          <div className="sidebar-section">
-            <span>Workspaces</span>
-            <IconButton
-              label="Search sessions"
-              onClick={() => {
-                setSearching(!searching);
-                setQuery("");
-              }}
-            >
-              <Search size={17} />
-            </IconButton>
-            <IconButton label="Add workspace" onClick={() => newSession()}>
-              <FolderPlus size={18} />
-            </IconButton>
-          </div>
-          {searching && (
-            <label className="sidebar-search">
-              <input
-                autoFocus
-                aria-label="Search sessions"
-                placeholder="Search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </label>
-          )}
           {workspaces.map((cwd) => {
             const rows = catalog.filter(
               (row) =>

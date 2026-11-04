@@ -13,6 +13,7 @@ import {
   Database,
   FolderOpen,
   Gauge,
+  GitGraph,
   MoreHorizontal,
   PanelLeft,
   PanelBottom,
@@ -22,10 +23,11 @@ import {
 } from "lucide-react";
 import type { RpcExtensionUIRequest } from "@earendil-works/pi-coding-agent";
 import type { PendingSelection, PiSnapshot, PiUpdate, Session } from "../shared/types";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { applyEvent, messageText, reconcileSnapshot } from "../shared/transcript";
+import { reconcileSnapshot } from "../shared/transcript";
+import { applyDisplayEvent } from "../shared/display";
 import { api, basename, useStream } from "./api";
 import { Composer } from "./Composer";
+import { SessionHistory } from "./SessionHistory";
 import { ResizableSplit } from "./ResizableSplit";
 import { GitBranchMenu } from "./GitBranchMenu";
 import { formatAsQuote } from "./composer-text";
@@ -107,13 +109,14 @@ export function PiView({
   const [queueMode, setQueueMode] = useState("steer");
   const [restoreRequest, setRestoreRequest] = useState<{ id: string; from: PendingSelection }>();
   const [composerBusy, setComposerBusy] = useState(false);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const [dropped, setDropped] = useState<{ id: string; files: File[]; containsDirectory: boolean }>();
   const [prefill, setPrefill] = useState<{ id: string; text: string; append?: boolean }>();
   const [selectedText, setSelectedText] = useState("");
   const [generation, setGeneration] = useState(0);
   const [branching, setBranching] = useState(false);
   const branchInFlight = useRef(false);
   const [treeOpen, setTreeOpen] = useState(false);
-  const [treeEntries, setTreeEntries] = useState<SessionEntry[]>([]);
   const scroll = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const follow = useRef(false);
@@ -157,7 +160,7 @@ export function PiView({
           if (current) current = { ...current, state: update.value };
         } else {
           if (current) {
-            const transcript = applyEvent(current.transcript, update.value);
+            const transcript = applyDisplayEvent(current.transcript, update.value);
             if (transcript !== current.transcript) current = { ...current, transcript };
           }
           if (update.value.type === "extension_ui_request" && update.value.method === "set_editor_text")
@@ -199,26 +202,14 @@ export function PiView({
   const latestUser = useMemo(() => projection?.items.findLast(
     (item) => item.message.role === "user",
   )?.id, [projection?.items]);
-  const empty = !latestUser && !projection?.running;
+  const empty = !projection?.items.length && !projection?.partial && !projection?.running;
   const showIntro = empty && view === "chat";
   useEffect(() => {
-    let anchor = true;
-    follow.current = false;
+    follow.current = true;
     const observer = new ResizeObserver(() => {
       const element = scroll.current;
       if (!element || view !== "chat") return;
-      let target: number | undefined;
-      if (anchor) {
-        const user = element.querySelectorAll<HTMLElement>(".user-message");
-        const last = user.item(user.length - 1);
-        if (!last) return;
-        target =
-          element.scrollTop +
-          last.getBoundingClientRect().top -
-          element.getBoundingClientRect().top -
-          20;
-        anchor = false;
-      } else if (follow.current) target = element.scrollHeight;
+      const target = follow.current ? element.scrollHeight : undefined;
       if (target !== undefined) {
         ownScroll.current = Math.max(
           0,
@@ -257,7 +248,11 @@ export function PiView({
         ? "Run /reload in this CLI to load branch controls"
         : branching
           ? "Session navigation is in progress"
-          : undefined;
+          : projection?.running
+            ? "Stop or wait for the current run before navigating"
+            : composerBusy
+              ? "Wait for the composer to finish"
+              : undefined;
   const canBranch = !branchDisabled;
   const branch = async (
     entryId: string,
@@ -278,7 +273,10 @@ export function PiView({
         type: action,
         ...(action === "fork" ? { entryId, position } : { targetId: entryId }),
       });
-      if (result.cancelled) return;
+      if (result.cancelled) {
+        setError("Navigation was cancelled by a pi extension");
+        return;
+      }
       const text = result.editorText ?? result.text;
       const previousDraft = sessionStorage.getItem(`draft:${session.id}`) || "";
       if (result.session && result.session.id !== session.id) {
@@ -310,17 +308,9 @@ export function PiView({
   const onBranch = useCallback((...args: Parameters<typeof branch>) => {
     void branchRef.current(...args);
   }, []);
-  const showTree = async () => {
+  const showTree = () => {
     setError("");
-    try {
-      const result = await command<{ entries: SessionEntry[] }>({
-        type: "get_entries",
-      });
-      setTreeEntries(result.entries);
-      setTreeOpen(true);
-    } catch (error) {
-      setError((error as Error).message);
-    }
+    setTreeOpen(true);
   };
   const stats = state?.stats;
   const turns = useMemo(() => stats?.userMessages ??
@@ -392,6 +382,8 @@ export function PiView({
         ...(state?.commands || []),
       ]}
       prefill={prefill}
+      dropped={dropped}
+      draggingFiles={draggingFiles}
       restoreRequest={restoreRequest}
       onBusyChange={setComposerBusy}
       disabled={
@@ -494,13 +486,6 @@ export function PiView({
               Copy session
             </button>
             <button
-              disabled={!canBranch}
-              title={branchDisabled}
-              onClick={() => void showTree()}
-            >
-              Session history…
-            </button>
-            <button
               onClick={() => {
                 setName(state?.session.name || session.name);
                 setRename(true);
@@ -547,6 +532,9 @@ export function PiView({
             {tab === "chat" ? "Chat" : tab === "files" ? "Files" : "Raw"}
           </button>
         ))}
+        <button className="history-trigger" disabled={!online || state?.loading || Boolean(state?.error)} onClick={showTree}>
+          <GitGraph size={16} /> History
+        </button>
         <div className="pane-toggles">
           <button
             className="terminal-toggle"
@@ -609,7 +597,38 @@ export function PiView({
             firstHidden={view === "files"}
             secondHidden={view !== "files" && !filesPane}
             first={
-              <div className={`conversation-body ${showIntro ? "is-empty" : ""}`}>
+              <div
+                className={`conversation-body ${showIntro ? "is-empty" : ""} ${draggingFiles ? "is-file-dragging" : ""}`}
+                onDragEnter={(event) => {
+                  if (event.dataTransfer.types.includes("Files")) {
+                    event.preventDefault();
+                    setDraggingFiles(true);
+                  }
+                }}
+                onDragOver={(event) => {
+                  if (event.dataTransfer.types.includes("Files")) {
+                    event.preventDefault();
+                    setDraggingFiles(true);
+                    event.dataTransfer.dropEffect = "copy";
+                  }
+                }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                    setDraggingFiles(false);
+                }}
+                onDrop={(event) => {
+                  if (!event.dataTransfer.types.includes("Files")) return;
+                  event.preventDefault();
+                  setDraggingFiles(false);
+                  setDropped({
+                    id: crypto.randomUUID(),
+                    files: Array.from(event.dataTransfer.files),
+                    containsDirectory: Array.from(event.dataTransfer.items).some(
+                      (item) => item.kind === "file" && item.webkitGetAsEntry?.()?.isDirectory,
+                    ),
+                  });
+                }}
+              >
                 <div className="empty-intro" hidden={!showIntro}>
                   <div className="hero-title">
                     <span className="pi-mark">π</span>
@@ -648,6 +667,9 @@ export function PiView({
                     >
                       {!showIntro && projection && (
                         <Transcript
+                          key={`${session.id}:${generation}:${branching}`}
+                          sessionId={session.id}
+                          cwd={session.cwd}
                           projection={projection}
                           raw={view === "raw"}
                           onBranch={onBranch}
@@ -742,47 +764,8 @@ export function PiView({
         )}
       />
       {treeOpen && (
-        <Modal title="Session history" onClose={() => setTreeOpen(false)}>
-          <div className="session-tree-list">
-            {treeEntries
-              .filter(
-                (entry) =>
-                  entry.type === "message" &&
-                  (entry.message.role === "user" ||
-                    entry.message.role === "assistant"),
-              )
-              .map(
-                (entry) =>
-                  entry.type === "message" && (
-                    <div key={entry.id} className="session-tree-entry">
-                      <span className="muted">
-                        {entry.message.role} · {entry.id}
-                        {entry.id === state?.leafId ? " · current" : ""}
-                      </span>
-                      <pre>{messageText(entry.message).slice(0, 200)}</pre>
-                      <button
-                        disabled={!canBranch}
-                        onClick={() => void branch(entry.id, "navigate_tree")}
-                      >
-                        Continue from here
-                      </button>
-                      <button
-                        disabled={!canBranch}
-                        onClick={() =>
-                          void branch(
-                            entry.id,
-                            "fork",
-                            entry.message.role === "user" ? "before" : "at",
-                          )
-                        }
-                      >
-                        Fork
-                      </button>
-                    </div>
-                  ),
-              )}
-          </div>
-        </Modal>
+        <SessionHistory command={command} onClose={() => setTreeOpen(false)} onBranch={onBranch}
+          disabled={branchDisabled} error={error} native={native} liveLeafId={state?.leafId} />
       )}
       {modelPicker && (
         <Modal title="Model" onClose={() => setModelPicker(false)}>

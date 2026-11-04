@@ -29,14 +29,15 @@ import {
   canonicalFile,
   type SessionClaim,
 } from '../server/ownership';
-import { sessionEntries, sessionStats, toPiEvent } from '../server/session-events';
+import { sessionEntries, sessionHistory, sessionHistoryEntry, sessionStats, toPiEvent } from '../server/session-events';
 import {
   JsonlConnection,
   guardJsonlFrames,
   MAX_BUFFERED_BYTES,
-  MAX_FRAME_BYTES,
 } from '../server/jsonl';
 import { stateDirectory } from '../server/local-runtime';
+import { DisplayContent } from '../server/display-content';
+import { addWebUIPrompt } from '../shared/webui-prompt';
 const NAVIGATE_COMMAND = 'pi-webui-control';
 const QUEUE_RECOVERY_REASON = 'Installed Pi does not expose native queue read/clear actions to extensions. Alt-Up in the terminal can recover the queue without aborting.';
 const THINKING_LEVELS = [
@@ -53,6 +54,7 @@ type NativePeer = {
   socket: Socket;
   rpc: JsonlConnection;
   connectionId: string;
+  display?: DisplayContent;
 };
 
 type QueuedRecord = { line: string; bytes: number };
@@ -114,7 +116,6 @@ class NativeBridgeSession {
   private flushPromise?: Promise<void>;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private wakeRetry?: () => void;
-  private snapshotWarningShown = false;
   private forkReplyId?: string;
   private replacing = false;
   private navigation?: {
@@ -156,6 +157,10 @@ class NativeBridgeSession {
       ctx.sessionManager.getSessionId() ===
         this.ctx.sessionManager.getSessionId()
     );
+  }
+
+  isConnected(ctx: ExtensionContext): boolean {
+    return this.matches(ctx) && this.connection !== undefined;
   }
 
   private readState(connected: boolean): PiState {
@@ -271,16 +276,6 @@ class NativeBridgeSession {
           this.ownershipConflict(message);
           return;
         }
-        if (
-          /snapshot exceeds the 32 MiB/i.test(message) &&
-          !this.snapshotWarningShown
-        ) {
-          this.snapshotWarningShown = true;
-          this.ctx.ui.notify(
-            `Pi Web UI bridge cannot send this session: ${message}`,
-            'warning',
-          );
-        }
       }
       if (this.stopped) return;
       await new Promise<void>((done) => {
@@ -333,7 +328,7 @@ class NativeBridgeSession {
           resolveConnect();
         });
       });
-      const response = await rpc.request<{ connectionId: string }>(
+      const response = await rpc.request<{ connectionId: string; displayDirectory?: string }>(
         {
           type: 'hello',
           sessionId: this.ctx.sessionManager.getSessionId(),
@@ -347,7 +342,8 @@ class NativeBridgeSession {
       if (this.stopped) return;
       if (!response?.connectionId)
         throw new Error('Bridge returned no connection ID');
-      peer = { socket, rpc, connectionId: response.connectionId };
+      peer = { socket, rpc, connectionId: response.connectionId,
+        display: response.displayDirectory ? new DisplayContent(response.displayDirectory) : undefined };
       this.connection = peer;
       this.phase = 'snapshot';
       const snapshot = this.canonicalSnapshot(true);
@@ -355,12 +351,8 @@ class NativeBridgeSession {
         type: 'snapshot',
         connectionId: peer.connectionId,
         sequence: this.sequence,
-        value: snapshot,
+        value: peer.display?.snapshot(snapshot) ?? snapshot,
       };
-      if (Buffer.byteLength(JSON.stringify(record)) > MAX_FRAME_BYTES)
-        throw new Error(
-          'Native session snapshot exceeds the 32 MiB frame limit',
-        );
       await rpc.write(record);
       if (this.connection !== peer) return;
       this.phase = 'live';
@@ -447,6 +439,10 @@ class NativeBridgeSession {
     switch (command.type) {
       case 'get_entries':
         return sessionEntries(this.ctx.sessionManager, command.since);
+      case 'get_history_tree':
+        return sessionHistory(this.ctx.sessionManager);
+      case 'get_history_entry':
+        return sessionHistoryEntry(this.ctx.sessionManager, command.entryId);
       case 'get_tree':
         return { tree: this.ctx.sessionManager.getTree(), leafId: this.ctx.sessionManager.getLeafId() };
       case 'navigate_tree':
@@ -521,6 +517,7 @@ class NativeBridgeSession {
 
   private requestNavigation(targetId: string, action: 'navigate_tree' | 'fork', position?: 'before' | 'at'): Promise<unknown> {
     if (!this.ctx.sessionManager.getEntry(targetId)) throw new Error(`Entry ${targetId} not found`);
+    if (!this.ctx.isIdle()) throw new Error('Wait for the current run to finish before navigating');
     if (this.navigation) throw new Error('A branch navigation is already pending');
     return new Promise((resolve, reject) => {
       const token = randomUUID();
@@ -541,10 +538,7 @@ class NativeBridgeSession {
         pending.resolve({ cancelled: false, leafId: pending.targetId });
         return;
       }
-      if (pending.action === 'navigate_tree' && !ctx.isIdle()) {
-        ctx.abort();
-        await ctx.waitForIdle();
-      }
+      if (!ctx.isIdle()) throw new Error('Wait for the current run to finish before navigating');
       const entry = ctx.sessionManager.getEntry(pending.targetId);
       const shouldPrefill = pending.action === 'fork'
         ? pending.position !== 'at'
@@ -675,7 +669,7 @@ class NativeBridgeSession {
       type: 'snapshot',
       connectionId: peer.connectionId,
       sequence: this.sequence,
-      value: snapshot,
+      value: peer.display?.snapshot(snapshot) ?? snapshot,
     });
   }
 
@@ -717,12 +711,8 @@ class NativeBridgeSession {
         type: 'snapshot',
         connectionId: peer.connectionId,
         sequence: ++this.sequence,
-        value: snapshot,
+        value: peer.display?.snapshot(snapshot) ?? snapshot,
       };
-      if (Buffer.byteLength(JSON.stringify(response)) > MAX_FRAME_BYTES)
-        throw new Error(
-          'Native session snapshot exceeds the 32 MiB frame limit',
-        );
       await peer.rpc.write(response);
       await peer.rpc.write({ id, type: 'response', success: true });
     } finally {
@@ -748,7 +738,7 @@ class NativeBridgeSession {
       type: 'update',
       connectionId: peer.connectionId,
       sequence: this.sequence,
-      value,
+      value: peer.display?.update(value) ?? value,
     });
   }
 
@@ -758,8 +748,7 @@ class NativeBridgeSession {
     const line = `${JSON.stringify(record)}\n`;
     const bytes = Buffer.byteLength(line);
     if (
-      bytes > MAX_FRAME_BYTES ||
-      this.queuedBytes + bytes > MAX_BUFFERED_BYTES
+      this.queuedBytes > 0 && this.queuedBytes + bytes > MAX_BUFFERED_BYTES
     ) {
       peer.socket.destroy(new Error('Native bridge backlog exceeded 4 MiB'));
       return;
@@ -849,6 +838,9 @@ export default function piWebUI(pi: ExtensionAPI): void {
     if (active?.matches(ctx)) active.agentEvent(event as AgentSessionEvent);
   };
 
+  pi.on('before_agent_start', (event, ctx) => {
+    if (active?.isConnected(ctx)) addWebUIPrompt(event);
+  });
   pi.on('agent_start', forward);
   pi.on('agent_end', forward);
   pi.on('agent_settled', forward);
