@@ -851,10 +851,10 @@ main {
   margin: 0;
 }
 .pi-mark {
-  font:
-    700 40px Georgia,
-    serif;
-  line-height: 1;
+  width: 36px;
+  height: 36px;
+  display: block;
+  flex-shrink: 0;
 }
 .hero-context-row {
   display: flex;

@@ -704,7 +704,7 @@ export function PiView({
               >
                 <div className="empty-intro" hidden={!showIntro}>
                   <div className="hero-title">
-                    <span className="pi-mark">π</span>
+                    <img className="pi-mark" src="/favicon.svg" alt="" width={36} height={36} />
                     <h2>New session</h2>
                   </div>
                   <div className="workspace-context" title={session.cwd}>

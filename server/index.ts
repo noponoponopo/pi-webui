@@ -845,13 +845,21 @@ export function startServer(
     return new Response('Not found', { status: 404 });
   }
 
+  const publicAssets = new Set([
+    join(dist, 'index.html'),
+    join(dist, 'favicon.svg'),
+    join(dist, 'apple-touch-icon.png'),
+    join(dist, 'icon-192.png'),
+    join(dist, 'icon-512.png'),
+    join(dist, 'manifest.webmanifest'),
+  ]);
   async function asset(url: URL) {
     const path = resolve(
       dist,
       `.${decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname)}`,
     );
     if (
-      path !== join(dist, 'index.html') &&
+      !publicAssets.has(path) &&
       !path.startsWith(join(dist, 'assets') + sep)
     )
       return new Response('Not found', { status: 404 });
