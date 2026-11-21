@@ -71,7 +71,6 @@ export async function revealPath(path: string): Promise<void> {
   if (process.platform === 'darwin') {
     await exec('open', ['-R', path], options);
   } else if (process.platform === 'win32') {
-    // Explorer can return 1 when handing the request to an existing window.
     await exec('explorer.exe', [`/select,"${path}"`], { ...options, windowsVerbatimArguments: true }).catch((error) => {
       if (error.code !== 1) throw error;
     });

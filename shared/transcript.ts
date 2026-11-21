@@ -121,7 +121,6 @@ function sameJson(left: unknown, right: unknown): boolean {
   );
 }
 
-/** Keep unchanged saved messages referentially stable across canonical snapshots. */
 export function reconcileSnapshot(previous: PiSnapshot | undefined, next: PiSnapshot): PiSnapshot {
   if (!previous) return next;
   const oldItems = previous.transcript.items;
@@ -139,7 +138,6 @@ export function reconcileSnapshot(previous: PiSnapshot | undefined, next: PiSnap
   };
 }
 
-/** Only adjacent deltas in the same message block can be combined. */
 export function mergeMessageDeltas(previous: PiEvent | undefined, next: PiEvent): PiEvent | undefined {
   if (next.type !== "message_update") return undefined;
   const right = next.assistantMessageEvent;

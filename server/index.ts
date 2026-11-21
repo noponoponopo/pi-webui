@@ -1,12 +1,12 @@
 import { dirname, join, resolve, sep } from 'node:path';
-import { CliBridge } from './bridge';
+import { CliBridge } from './sessions/cli-bridge';
 import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { DisplayContent } from './display-content';
-import { displayResponse } from './display-response';
+import { DisplayContent } from './sessions/display-content';
+import { displayResponse } from './sessions/display-response';
 import { transcriptPage } from '../shared/display';
-import { canonicalFile } from './ownership';
+import { canonicalFile } from './sessions/ownership';
 import type { RpcExtensionUIResponse } from '@earendil-works/pi-coding-agent';
 import type {
   TerminalUpdate,
@@ -18,7 +18,7 @@ import type {
 } from '../shared/types';
 import { Terminals } from './terminal';
 import { mergeMessageDeltas } from '../shared/transcript';
-import { PiSessions } from './pi';
+import { PiSessions } from './sessions/pi-sessions';
 import { Store } from './store';
 import {
   getGitStatus,
@@ -33,13 +33,13 @@ import {
   unstageGitFiles,
   commitGit,
   switchGitBranch,
-} from './git';
+} from './git/git';
 import { listenLocal, publishRuntime, stateDirectory } from './local-runtime';
 import { openFile, pickFiles } from './native-files';
 import { Uploads } from './uploads';
-import { pullRequests } from './pull-requests';
+import { pullRequests } from './git/pull-requests';
 import { Automations } from './automations';
-import { readHistory } from './history';
+import { readHistory } from './sessions/history';
 import { messageText } from '../shared/transcript';
 
 type Body = Record<string, unknown>;
@@ -193,7 +193,6 @@ export function stream<T>(
       start(controller) {
         const write = (frame: string) => {
           if (closed) return;
-          // Discard the backlog; slow readers reconnect from an authoritative snapshot.
           if ((controller.desiredSize ?? 0) < 0) {
             closed = true;
             cleanup();
@@ -234,7 +233,6 @@ export function stream<T>(
   });
 }
 
-/** Coalesce partial progress without dropping text or crossing event boundaries. */
 export function piStream(
   subscribe: (send: (value: PiUpdate) => void) => () => void,
 ): Response {
@@ -891,7 +889,6 @@ export function startServer(
 }
 
 export async function runServer() {
-  // This process hosts agents; inherited terminal identity must not leak into their tools.
   for (const key of Object.keys(process.env))
     if (
       [

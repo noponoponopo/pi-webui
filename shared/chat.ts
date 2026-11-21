@@ -93,7 +93,6 @@ export function presentTurn(turn: ChatTurn, partial?: Message) {
         result: message,
       });
     } else if (message.role !== 'custom' || message.display) {
-      // Compaction summaries describe model context, not additional assistant replies.
       steps.push({ id, kind: 'context', message });
     }
   }

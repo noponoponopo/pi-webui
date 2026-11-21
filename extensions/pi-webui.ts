@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection, type Socket } from 'node:net';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { contentText } from '@earendil-works/pi-ai';
 import type {
@@ -28,16 +27,17 @@ import {
   claimSessionFile,
   canonicalFile,
   type SessionClaim,
-} from '../server/ownership';
-import { sessionEntries, sessionHistory, sessionHistoryEntry, sessionStats, toPiEvent } from '../server/session-events';
+} from '../server/sessions/ownership';
+import { sessionEntries, sessionHistory, sessionHistoryEntry, sessionStats, toPiEvent } from '../server/sessions/session-events';
 import {
   JsonlConnection,
   guardJsonlFrames,
   MAX_BUFFERED_BYTES,
-} from '../server/jsonl';
+} from '../server/sessions/jsonl';
 import { stateDirectory } from '../server/local-runtime';
-import { DisplayContent } from '../server/display-content';
-import { addWebUIPrompt } from '../shared/webui-prompt';
+import { DisplayContent } from '../server/sessions/display-content';
+import { addWebUIPrompt } from '../server/sessions/webui-prompt';
+import { expandHome, isObject } from '../server/util';
 const NAVIGATE_COMMAND = 'pi-webui-control';
 const QUEUE_RECOVERY_REASON = 'Installed Pi does not expose native queue read/clear actions to extensions. Alt-Up in the terminal can recover the queue without aborting.';
 const THINKING_LEVELS = [
@@ -59,10 +59,6 @@ type NativePeer = {
 
 type QueuedRecord = { line: string; bytes: number };
 
-function isObject(value: unknown): value is Record<string, any> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
 function publicModel(model: {
   id: string;
   provider: string;
@@ -77,14 +73,6 @@ function publicModel(model: {
     reasoning: model.reasoning,
     contextWindow: model.contextWindow,
   };
-}
-
-function expandHome(path: string): string {
-  return path === '~'
-    ? homedir()
-    : path.startsWith('~/')
-      ? join(homedir(), path.slice(2))
-      : path;
 }
 
 function socketAddress(): string {

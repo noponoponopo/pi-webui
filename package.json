@@ -12,9 +12,6 @@
     "cli": "bun dist/cli.js",
     "setup": "bun dist/cli.js setup",
     "check": "tsc --noEmit",
-    "test": "bun test",
-    "smoke:pi": "bun tests/pi-smoke.ts",
-    "smoke:live": "bun tests/live-smoke.ts",
     "bridge:install": "bun scripts/install-bridge.ts"
   },
   "dependencies": {

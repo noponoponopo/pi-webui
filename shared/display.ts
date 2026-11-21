@@ -10,7 +10,6 @@ export function transcriptPage(items: TranscriptItem[], before?: string): Transc
   return { items: items.slice(start, end), before: start > 0 ? items[start].id : undefined, total: items.length };
 }
 
-/** Preserve loaded ancestors, but replace the tail with the authoritative live window. */
 export function reconcileHistory(history: TranscriptPage, latest: Projection): TranscriptPage {
   const start = latest.before && latest.items.length
     ? history.items.findIndex((item) => item.id === latest.items[0].id)
@@ -24,7 +23,6 @@ export function reconcileHistory(history: TranscriptPage, latest: Projection): T
   };
 }
 
-/** Display-only reduction. The agent retains the complete, authoritative messages. */
 export function applyDisplayEvent(previous: Projection, event: PiEvent, limit = DISPLAY_PAGE_SIZE): Projection {
   let next = applyEvent(previous, event);
   if (next === previous) return next;

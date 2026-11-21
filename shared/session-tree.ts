@@ -92,7 +92,6 @@ export function historyGraph(tree: HistoryTree): { rows: HistoryRow[]; columns: 
   const byId = new Map(tree.entries.map((entry) => [entry.id, entry]));
   const active = new Set<string>();
   for (let id = tree.leafId; id && !active.has(id); id = byId.get(id)?.parentId ?? null) active.add(id);
-  // Each lane waits for the parent of a row already visited in reverse order.
   const lanes: (string | null)[] = [];
   let columns = 1;
   const rows = [...tree.entries].reverse().map((entry): HistoryRow => {

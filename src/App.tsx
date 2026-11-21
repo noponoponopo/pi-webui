@@ -11,15 +11,14 @@ import {
   MessageCirclePlus,
   MoreHorizontal,
   PanelLeft,
-  Plus,
   Search,
   Settings,
   SlidersHorizontal,
   Sparkles,
 } from "lucide-react";
 import type { HistoryRow, Session, SessionRow } from "../shared/types";
-import { age, api, basename, useStream } from "./api";
-import { Composer } from "./Composer";
+import { age, api, basename, useStream } from "./lib/api";
+import { Composer } from "./session/Composer";
 import {
   applyTypography,
   fontSizes,
@@ -35,23 +34,25 @@ import {
   type MonoFont,
   type SendShortcut,
   type UiFont,
-} from "./preferences";
-import { OpenHistoryDialog } from "./OpenHistoryDialog";
-import { Workspace } from "./Workspace";
-import { WorkspacePathInput } from "./WorkspacePathInput";
-import { ResizeHandle } from "./ResizableSplit";
-import { SessionMenu } from "./SessionMenu";
-import { AutomationsView } from "./AutomationsView";
-import { PresetsModal } from "./PresetsModal";
-import { savePresets, storedPresets, type SessionPreset } from "./presets";
-import { sessionKey, storedActivity, storedBookmarks, updateActivity } from "./session-activity";
+} from "./lib/preferences";
+import { OpenHistoryDialog } from "./workspace/OpenHistoryDialog";
+import { Workspace } from "./workspace/Workspace";
+import { ResizeHandle } from "./components/ResizableSplit";
+import { SessionMenu } from "./workspace/SessionMenu";
+import { AutomationsView } from "./automations/AutomationsView";
+import { PresetsModal } from "./workspace/PresetsModal";
+import { savePresets, storedPresets, type SessionPreset } from "./lib/presets";
+import { sessionKey, storedActivity, storedBookmarks, updateActivity } from "./lib/session-activity";
 import {
   workspaceOrder,
   workspaceSessions,
   type WorkspaceSession,
 } from "../shared/workspaces";
-import { PiView } from "./PiView";
-import { ErrorNotice, IconButton, Modal } from "./ui";
+import { PiView } from "./session/PiView";
+import { CreateDialog } from "./workspace/CreateDialog";
+import { QuickSwitcher } from "./workspace/QuickSwitcher";
+import { SessionActionDialog } from "./workspace/SessionActionDialog";
+import { ErrorNotice, IconButton, Modal } from "./components/ui";
 
 function playCompletionChime() {
   try {
@@ -71,9 +72,7 @@ function playCompletionChime() {
     osc.start();
     osc.stop(ctx.currentTime + 0.26);
     osc.onended = () => void ctx.close();
-  } catch {
-    /* Audio playback may be blocked until user gesture. */
-  }
+  } catch {}
 }
 
 function route() {
@@ -1262,268 +1261,5 @@ export function App() {
         </Modal>
       )}
     </div>
-  );
-}
-
-function SessionActionDialog({ row, type, onClose, onDone }: {
-  row: WorkspaceSession;
-  type: 'rename' | 'delete';
-  onClose: () => void;
-  onDone: (name: string) => void;
-}) {
-  const [name, setName] = useState(row.session?.name || row.history?.name || row.name);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const deleting = type === 'delete';
-  return (
-    <Modal title={deleting ? 'Delete session' : 'Rename session'} dismissible={!busy} onClose={onClose}>
-      <form onSubmit={async (event) => {
-        event.preventDefault();
-        if (busy) return;
-        setBusy(true);
-        setError('');
-        try {
-          await api(`/pi/${type}`, { path: row.session?.file || row.history?.path, name: name.trim(), confirmed: deleting });
-          onDone(name.trim());
-        } catch (reason) {
-          setError((reason as Error).message);
-          setBusy(false);
-        }
-      }}>
-        {deleting ? <p>Delete “{row.name}”? Its history will be moved to the local trash. An active Web run will stop. Close the CLI first if it owns this session.</p> :
-          <label>Session name<input autoFocus aria-label="Session name" maxLength={200} required value={name} onChange={(event) => setName(event.target.value)} /></label>}
-        <ErrorNotice error={error} />
-        <div className="dialog-actions">
-          <button type="button" disabled={busy} onClick={onClose}>Cancel</button>
-          <button type="submit" className="primary" disabled={busy || (!deleting && !name.trim())}>{busy ? 'Saving…' : deleting ? 'Delete' : 'Save'}</button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-function CreateDialog({
-  cwd: initialCwd,
-  onClose,
-  onPi,
-}: {
-  cwd: string;
-  onClose: () => void;
-  onPi: (session: Session) => void;
-}) {
-  const [cwd, setCwd] = useState(initialCwd);
-  const [history, setHistory] = useState<HistoryRow[]>();
-  const [resuming, setResuming] = useState(false);
-  const [filter, setFilter] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const create = async (source?: HistoryRow) => {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      onPi(
-        await api<Session>("/pi/sessions", {
-          cwd: source?.cwd || cwd,
-          source: source?.path,
-        }),
-      );
-    } catch (error) {
-      setError((error as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Modal
-      title="New session"
-      onClose={() => {
-        if (!busy) onClose();
-      }}
-    >
-      <nav className="dialog-tabs">
-        <button
-          aria-current={!resuming ? "page" : undefined}
-          onClick={() => setResuming(false)}
-        >
-          New
-        </button>
-        <button
-          aria-current={resuming ? "page" : undefined}
-          onClick={async () => {
-            setResuming(true);
-            if (!history) {
-              try {
-                setHistory(await api("/pi/history"));
-              } catch (error) {
-                setError((error as Error).message);
-              }
-            }
-          }}
-        >
-          Copy
-        </button>
-      </nav>
-      <ErrorNotice error={error} />
-      {resuming ? (
-        <>
-          <label className="search-field">
-            <Search size={16} />
-            <input
-              aria-label="Search saved sessions"
-              placeholder="Search saved sessions"
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-            />
-          </label>
-          <p className="settings-note">
-            Continue in a copy. The original CLI session is left unchanged.
-          </p>
-          <div className="history-list">
-            {history ? (
-              history
-                .filter((session) =>
-                  `${session.name} ${session.cwd}`
-                    .toLowerCase()
-                    .includes(filter.toLowerCase()),
-                )
-                .slice(0, 100)
-                .map((session) => (
-                  <button
-                    key={session.path}
-                    disabled={busy}
-                    onClick={() => void create(session)}
-                  >
-                    <span>{session.name}</span>
-                    <small>
-                      {basename(session.cwd)} · {age(session.updatedAt)}
-                    </small>
-                  </button>
-                ))
-            ) : (
-              <p>Loading sessions…</p>
-            )}
-            {history?.length === 0 && <p>No saved sessions.</p>}
-          </div>
-        </>
-      ) : (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void create();
-          }}
-        >
-          <label htmlFor="workspace-path">Working directory</label>
-          <WorkspacePathInput value={cwd} onChange={setCwd} />
-          <div className="dialog-actions">
-            <button type="button" disabled={busy} onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="primary"
-              disabled={busy || !cwd.trim()}
-            >
-              {busy ? (
-                <LoaderCircle size={16} className="spin" />
-              ) : (
-                <Plus size={16} />
-              )}
-              Create session
-            </button>
-          </div>
-        </form>
-      )}
-    </Modal>
-  );
-}
-
-function QuickSwitcher({
-  catalog,
-  theme,
-  onClose,
-  onSelectSession,
-  onNewSession,
-  onToggleSidebar,
-  onCycleTheme,
-  onOpenSettings,
-}: {
-  catalog: WorkspaceSession[];
-  theme: string;
-  onClose: () => void;
-  onSelectSession: (row: WorkspaceSession) => void;
-  onNewSession: () => void;
-  onToggleSidebar: () => void;
-  onCycleTheme: () => void;
-  onOpenSettings: () => void;
-}) {
-  const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState(0);
-  const q = filter.trim().toLowerCase();
-  const actions = [
-    { key: "action:new", label: "New session", meta: "Create a session in any workspace", run: onNewSession },
-    { key: "action:sidebar", label: "Toggle sidebar", meta: "⌘B", run: onToggleSidebar },
-    { key: "action:theme", label: `Switch theme (current: ${theme})`, meta: "System / Dark / Light", run: onCycleTheme },
-    { key: "action:settings", label: "Open settings", meta: "Preferences", run: onOpenSettings },
-  ].filter((item) => !q || `${item.label} ${item.meta}`.toLowerCase().includes(q));
-  const sessions = catalog
-    .filter((row) => !q || `${row.name} ${row.cwd}`.toLowerCase().includes(q))
-    .slice(0, 25);
-  const entries = [
-    ...sessions.map((row) => ({
-      key: `session:${row.key}`,
-      label: row.name,
-      meta: `${basename(row.cwd)} · ${age(row.updatedAt)}`,
-      run: () => onSelectSession(row),
-    })),
-    ...actions,
-  ];
-  const activeIndex = entries.length ? Math.min(selected, entries.length - 1) : 0;
-  return (
-    <Modal title="Quick switch" onClose={onClose}>
-      <label className="search-field">
-        <Search size={16} />
-        <input
-          autoFocus
-          aria-label="Jump to session or action"
-          placeholder="Jump to session or action…"
-          value={filter}
-          onChange={(event) => {
-            setFilter(event.target.value);
-            setSelected(0);
-          }}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-            if (!entries.length) return;
-            if (event.key === "ArrowDown") {
-              event.preventDefault();
-              setSelected((activeIndex + 1) % entries.length);
-            } else if (event.key === "ArrowUp") {
-              event.preventDefault();
-              setSelected((activeIndex + entries.length - 1) % entries.length);
-            } else if (event.key === "Enter") {
-              event.preventDefault();
-              entries[activeIndex]?.run();
-            }
-          }}
-        />
-      </label>
-      <div className="history-list quick-switcher-list" role="listbox">
-        {entries.map((entry, index) => (
-          <button
-            key={entry.key}
-            role="option"
-            aria-selected={index === activeIndex}
-            className={index === activeIndex ? "selected" : undefined}
-            onMouseEnter={() => setSelected(index)}
-            onClick={entry.run}
-          >
-            <span>{entry.label}</span>
-            <small>{entry.meta}</small>
-          </button>
-        ))}
-        {entries.length === 0 && <p className="empty-note">No matching sessions or actions.</p>}
-      </div>
-    </Modal>
   );
 }

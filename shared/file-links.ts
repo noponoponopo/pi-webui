@@ -1,4 +1,3 @@
-// Leave external web URLs and in-page references to the browser.
 export function localFileLink(href: string, cwd: string, origin?: string): string | undefined {
   if (!href || href.startsWith('#') || href.startsWith('?') || href.startsWith('//')) return;
   try {
@@ -13,5 +12,5 @@ export function localFileLink(href: string, cwd: string, origin?: string): strin
     base.pathname = `${cwd.replace(/\\/g, '/').replace(/\/$/, '')}/`;
     const url = new URL(href, base);
     if (url.protocol === 'file:' && !url.host) return url.href;
-  } catch { /* Invalid links are not local file links. */ }
+  } catch {}
 }
