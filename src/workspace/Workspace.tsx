@@ -85,7 +85,7 @@ export function Workspace({
           draggable={Boolean(onDragStart)}
           onDragStart={onDragStart}
         >
-          <FolderOpen size={17} />
+          <span className="workspace-icon-slot" aria-hidden="true" />
           <span>{title}</span>
         </summary>
         {rows.slice(0, limit).map((row) => row.content)}
@@ -105,7 +105,14 @@ export function Workspace({
         aria-pressed={pinned}
         onClick={onPin}
       >
-        <Pin size={15} fill={pinned ? 'currentColor' : 'none'} />
+        {pinned ? (
+          <Pin size={15} className="workspace-pinned-icon" fill="currentColor" />
+        ) : (
+          <>
+            <FolderOpen size={17} className="workspace-folder-icon" />
+            <Pin size={15} className="workspace-pin-hover-icon" />
+          </>
+        )}
       </IconButton>
       <IconButton
         className="icon-button workspace-new"

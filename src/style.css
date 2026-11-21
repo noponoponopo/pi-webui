@@ -264,8 +264,7 @@ svg {
 .workspace-group.drag-over {
   box-shadow: inset 0 2px 0 var(--accent);
 }
-.workspace-new,
-.workspace-pin {
+.workspace-new {
   position: absolute;
   top: 4px;
   right: 2px;
@@ -276,23 +275,35 @@ svg {
   transition: opacity 0.12s ease;
 }
 .workspace-pin {
-  right: 28px;
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 25px;
+  height: 26px;
+  padding: 0;
+  color: var(--muted);
 }
 .workspace-pin[aria-pressed="true"] {
   color: var(--accent);
-  opacity: 0.7;
-  pointer-events: auto;
+}
+.workspace-pin .workspace-pin-hover-icon {
+  display: none;
+}
+.workspace-pin:hover .workspace-folder-icon,
+.workspace-pin:focus-visible .workspace-folder-icon {
+  display: none;
+}
+.workspace-pin:hover .workspace-pin-hover-icon,
+.workspace-pin:focus-visible .workspace-pin-hover-icon {
+  display: block;
 }
 .workspace-group:hover .workspace-new,
-.workspace-group:hover .workspace-pin,
-.workspace-group:focus-within .workspace-new,
-.workspace-group:focus-within .workspace-pin {
+.workspace-group:focus-within .workspace-new {
   opacity: 1;
   pointer-events: auto;
 }
 @media (hover: none) {
-  .workspace-new,
-  .workspace-pin {
+  .workspace-new {
     opacity: 1;
     pointer-events: auto;
   }
@@ -300,10 +311,14 @@ svg {
 .workspace-more {
   width: 100%;
   justify-content: flex-start;
-  padding: 4px 9px 4px 27px;
+  padding: 4px 9px 4px 33px;
   min-height: 28px;
   font-size: 12px;
   color: var(--muted);
+}
+.workspace-icon-slot {
+  width: 17px;
+  flex-shrink: 0;
 }
 .workspace > summary {
   display: flex;
@@ -314,7 +329,7 @@ svg {
 }
 .workspace-group:hover .workspace > summary,
 .workspace-group:focus-within .workspace > summary {
-  padding-right: 58px;
+  padding-right: 32px;
 }
 .workspace > summary:hover {
   background: var(--hover);
@@ -340,7 +355,7 @@ svg {
 .session-row {
   width: 100%;
   min-height: 34px;
-  padding: 6px 9px 6px 27px;
+  padding: 6px 9px 6px 14px;
   justify-content: space-between;
   text-align: left;
   gap: 7px;
@@ -350,7 +365,7 @@ svg {
   background: transparent;
 }
 .session-row.bookmarked {
-  padding-left: 9px;
+  padding-left: 8px;
 }
 .session-more-btn {
   position: absolute;
