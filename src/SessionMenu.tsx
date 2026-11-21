@@ -1,4 +1,4 @@
-import { Bookmark, BookmarkMinus, Copy, Pencil, Trash2 } from 'lucide-react';
+import { Bookmark, BookmarkMinus, Copy, Download, Pencil, Trash2 } from 'lucide-react';
 import { ContextMenu } from './ContextMenu';
 
 export function SessionMenu({
@@ -13,7 +13,7 @@ export function SessionMenu({
   y: number;
   available: boolean;
   bookmarked: boolean;
-  onAction: (action: 'bookmark' | 'copy' | 'rename' | 'delete') => void;
+  onAction: (action: 'bookmark' | 'copy' | 'rename' | 'delete' | 'export-md' | 'export-jsonl') => void;
   onClose: () => void;
 }) {
   const BookmarkIcon = bookmarked ? BookmarkMinus : Bookmark;
@@ -39,6 +39,22 @@ export function SessionMenu({
       >
         <Pencil size={15} />
         Rename
+      </button>
+      <button
+        role="menuitem"
+        disabled={!available}
+        onClick={() => onAction('export-md')}
+      >
+        <Download size={15} />
+        Download Markdown
+      </button>
+      <button
+        role="menuitem"
+        disabled={!available}
+        onClick={() => onAction('export-jsonl')}
+      >
+        <Download size={15} />
+        Download JSONL
       </button>
       <button
         role="menuitem"

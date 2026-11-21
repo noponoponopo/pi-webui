@@ -50,8 +50,10 @@
   stroke: var(--faint);
   stroke-width: 1.5;
 }
-.history-graph circle.active { fill: var(--accent); stroke: var(--accent); }
-.history-graph circle.current { fill: var(--raised); stroke: var(--accent); stroke-width: 2.5; }
+.history-graph circle.user { fill: var(--green); stroke: var(--green); }
+.history-graph circle.assistant { fill: var(--accent); stroke: var(--accent); }
+.history-graph circle.active { stroke-width: 2.5; }
+.history-graph circle.current { stroke-width: 2.5; }
 .history-node {
   min-width: 0;
   flex: 1;

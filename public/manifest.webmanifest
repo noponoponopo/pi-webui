@@ -1,0 +1,17 @@
+{
+  "name": "pi",
+  "short_name": "pi",
+  "description": "Local Web UI for pi coding agent",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

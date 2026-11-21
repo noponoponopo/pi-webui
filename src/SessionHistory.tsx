@@ -23,7 +23,7 @@ function Graph({ row, columns, current }: { row: HistoryRow; columns: number; cu
       {row.incoming.map((lane) => <path key={`in${lane}`} d={`M${x(lane)} 0V30`} />)}
       {row.outgoing.map((lane) => <path key={`out${lane}`} d={`M${x(lane)} 30V60`} />)}
       {row.join !== undefined && <path d={`M${x(row.column)} 30 C${x(row.column)} 46 ${x(row.join)} 44 ${x(row.join)} 60`} />}
-      <circle className={current ? 'current' : row.active ? 'active' : ''} cx={x(row.column)} cy="30" r={current ? 5 : 4} />
+      <circle className={[row.entry.kind, current ? 'current' : row.active ? 'active' : ''].join(' ')} cx={x(row.column)} cy="30" r={current ? 5 : 4} />
     </svg>
   );
 }

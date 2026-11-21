@@ -10,7 +10,6 @@ import {
 import {
   ArrowDown,
   ChevronDown,
-  Database,
   FolderOpen,
   Gauge,
   GitGraph,
@@ -20,10 +19,11 @@ import {
   PanelRight,
   Search,
   Quote,
+  X,
 } from "lucide-react";
 import type { RpcExtensionUIRequest } from "@earendil-works/pi-coding-agent";
 import type { PendingSelection, PiSnapshot, PiUpdate, Session } from "../shared/types";
-import { reconcileSnapshot } from "../shared/transcript";
+import { messageText, reconcileSnapshot } from "../shared/transcript";
 import { applyDisplayEvent } from "../shared/display";
 import { api, basename, useStream } from "./api";
 import { Composer } from "./Composer";
@@ -121,7 +121,10 @@ export function PiView({
   const content = useRef<HTMLDivElement>(null);
   const follow = useRef(false);
   const ownScroll = useRef<number | null>(null);
+  const lastScrollTop = useRef(0);
+  const touchY = useRef<number | null>(null);
   const [atBottom, setAtBottom] = useState(true);
+  const [activeTurn, setActiveTurn] = useState(0);
   useEffect(() => {
     const updateSelection = () => {
       const selection = window.getSelection();
@@ -199,9 +202,16 @@ export function PiView({
     void attach();
     return () => { disposed = true; clearTimeout(timer); };
   }, [connected, native, state?.connected, session.file]);
-  const latestUser = useMemo(() => projection?.items.findLast(
-    (item) => item.message.role === "user",
-  )?.id, [projection?.items]);
+  const loadedTurns = useMemo(
+    () =>
+      (projection?.items ?? [])
+        .filter((item) => item.message.role === "user")
+        .map((item) => {
+          const line = messageText(item.message).split("\n")[0]?.trim() || "";
+          return line.length > 64 ? `${line.slice(0, 64)}…` : line;
+        }),
+    [projection?.items],
+  );
   const empty = !projection?.items.length && !projection?.partial && !projection?.running;
   const showIntro = empty && view === "chat";
   useEffect(() => {
@@ -209,13 +219,13 @@ export function PiView({
     const observer = new ResizeObserver(() => {
       const element = scroll.current;
       if (!element || view !== "chat") return;
-      const target = follow.current ? element.scrollHeight : undefined;
-      if (target !== undefined) {
-        ownScroll.current = Math.max(
-          0,
-          Math.min(target, element.scrollHeight - element.clientHeight),
-        );
-        element.scrollTop = ownScroll.current;
+      if (follow.current) {
+        const nextTop = Math.max(0, element.scrollHeight - element.clientHeight);
+        if (Math.abs(element.scrollTop - nextTop) > 1) {
+          ownScroll.current = nextTop;
+          element.scrollTop = nextTop;
+          lastScrollTop.current = nextTop;
+        }
       }
       setAtBottom(
         element.scrollHeight - element.scrollTop - element.clientHeight < 90,
@@ -224,7 +234,24 @@ export function PiView({
     if (content.current) observer.observe(content.current);
     if (scroll.current) observer.observe(scroll.current);
     return () => observer.disconnect();
-  }, [view, latestUser]);
+  }, [view]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setFilesOpened(true);
+        setFilesPane((open) => (view === "files" ? true : !open));
+        if (view === "files") setView("chat");
+      } else if (event.ctrlKey && !event.metaKey && !event.altKey && event.key === "`") {
+        event.preventDefault();
+        setTerminalOpened(true);
+        setTerminalOpen((open) => !open);
+      }
+    };
+    addEventListener("keydown", onKeyDown);
+    return () => removeEventListener("keydown", onKeyDown);
+  }, [view]);
   useEffect(() => {
     document.title = `${state?.session.name || session.name} · pi`;
   }, [state?.session.name, session.name]);
@@ -396,6 +423,13 @@ export function PiView({
       }
       onSend={async (message) => {
         follow.current = true;
+        if (scroll.current) {
+          const nextTop = Math.max(0, scroll.current.scrollHeight - scroll.current.clientHeight);
+          ownScroll.current = nextTop;
+          scroll.current.scrollTop = nextTop;
+          lastScrollTop.current = nextTop;
+          setAtBottom(true);
+        }
         if (message.trim() === "/compact")
           await command({ type: "compact" });
         else
@@ -456,68 +490,138 @@ export function PiView({
             }}
           />
         )}
-        <details
-          className="session-menu"
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget))
-              event.currentTarget.open = false;
-          }}
-        >
-          <summary aria-label="Session actions">
-            <MoreHorizontal size={20} />
-          </summary>
-          <div className="menu">
-            {onResume && !online && (
-              <button onClick={onResume}>Resume in Web…</button>
-            )}
-            {onSource && (
-              <button onClick={onSource}>View original session</button>
-            )}
+        <div className="header-actions">
+          <div className="pane-toggles">
             <button
-              disabled={!session.file || state?.loading}
-              onClick={async () => {
-                try {
-                  await onCopy();
-                } catch (error) {
-                  setError((error as Error).message);
-                }
-              }}
-            >
-              Copy session
-            </button>
-            <button
+              className="open-workspace-button"
+              aria-label="Open workspace folder"
+              title={`Open ${basename(session.cwd)} in file manager`}
               onClick={() => {
-                setName(state?.session.name || session.name);
-                setRename(true);
+                const encoded = session.cwd.split("/").map(encodeURIComponent).join("/");
+                const url = session.cwd.startsWith("/") ? `file://${encoded}` : `file:///${encoded}`;
+                void api("/files/open", { url }).catch((reason) =>
+                  setError((reason as Error).message),
+                );
               }}
             >
-              Rename session
+              <FolderOpen size={17} />
             </button>
             <button
-              disabled={!online || state?.loading}
-              onClick={() => void act({ type: "compact" })}
-            >
-              Compact context
-            </button>
-            <button
-              disabled={projection?.running}
-              onClick={async () => {
-                try {
-                  await api(
-                    `/pi/${encodeURIComponent(session.id)}/restart`,
-                    {},
-                  );
-                  setGeneration(generation + 1);
-                  setError("");
-                } catch (error) {
-                  setError((error as Error).message);
-                }
+              className="terminal-toggle"
+              aria-label="Toggle terminal"
+              aria-pressed={terminalOpen}
+              title="Toggle terminal (⌃`)"
+              onClick={() => {
+                setTerminalOpened(true);
+                setTerminalOpen(!terminalOpen);
               }}
             >
-              Reconnect pi
+              <PanelBottom size={18} />
+            </button>
+            <button
+              className="files-toggle"
+              aria-label="Toggle files pane"
+              aria-pressed={filesPane && view !== "files"}
+              title="Toggle files pane (⇧⌘B)"
+              onClick={() => {
+                setFilesOpened(true);
+                setFilesPane(view === "files" || !filesPane);
+                if (view === "files") setView("chat");
+              }}
+            >
+              <PanelRight size={18} />
             </button>
           </div>
-        </details>
+          <details
+            className="session-menu"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget))
+                event.currentTarget.open = false;
+            }}
+          >
+            <summary aria-label="Session actions">
+              <MoreHorizontal size={20} />
+            </summary>
+            <div className="menu">
+              {onResume && !online && (
+                <button onClick={onResume}>Resume in Web…</button>
+              )}
+              {onSource && (
+                <button onClick={onSource}>View original session</button>
+              )}
+              <button
+                onClick={() => {
+                  void navigator.clipboard?.writeText(session.cwd).catch(() => {});
+                }}
+              >
+                Copy workspace path
+              </button>
+              <button
+                disabled={!session.file}
+                onClick={() => {
+                  if (!session.file) return;
+                  const params = new URLSearchParams({ path: session.file, format: "md" });
+                  location.assign(`/api/pi/export?${params}`);
+                }}
+              >
+                Download Markdown
+              </button>
+              <button
+                disabled={!session.file}
+                onClick={() => {
+                  if (!session.file) return;
+                  const params = new URLSearchParams({ path: session.file, format: "jsonl" });
+                  location.assign(`/api/pi/export?${params}`);
+                }}
+              >
+                Download JSONL
+              </button>
+              <button
+                disabled={!session.file || state?.loading}
+                onClick={async () => {
+                  try {
+                    await onCopy();
+                  } catch (error) {
+                    setError((error as Error).message);
+                  }
+                }}
+              >
+                Copy session
+              </button>
+              <button
+                onClick={() => {
+                  setName(state?.session.name || session.name);
+                  setRename(true);
+                }}
+              >
+                Rename session
+              </button>
+              <button
+                disabled={!online || state?.loading}
+                onClick={() => void act({ type: "compact" })}
+              >
+                Compact context
+              </button>
+              <button
+                disabled={projection?.running}
+                onClick={async () => {
+                  try {
+                    await api(
+                      `/pi/${encodeURIComponent(session.id)}/restart`,
+                      {},
+                    );
+                    setGeneration(generation + 1);
+                    setError("");
+                  } catch (error) {
+                    setError((error as Error).message);
+                  }
+                }}
+              >
+                Reconnect pi
+              </button>
+            </div>
+          </details>
+        </div>
       </header>
       <nav className="view-tabs" aria-label="Conversation view">
         {["chat", "raw", "files"].map((tab) => (
@@ -535,33 +639,6 @@ export function PiView({
         <button className="history-trigger" disabled={!online || state?.loading || Boolean(state?.error)} onClick={showTree}>
           <GitGraph size={16} /> History
         </button>
-        <div className="pane-toggles">
-          <button
-            className="terminal-toggle"
-            aria-label="Toggle terminal"
-            aria-pressed={terminalOpen}
-            title="Toggle terminal"
-            onClick={() => {
-              setTerminalOpened(true);
-              setTerminalOpen(!terminalOpen);
-            }}
-          >
-            <PanelBottom size={18} />
-          </button>
-          <button
-            className="files-toggle"
-            aria-label="Toggle files pane"
-            aria-pressed={filesPane && view !== "files"}
-            title="Toggle files pane"
-            onClick={() => {
-              setFilesOpened(true);
-              setFilesPane(view === "files" || !filesPane);
-              if (view === "files") setView("chat");
-            }}
-          >
-            <PanelRight size={18} />
-          </button>
-        </div>
       </nav>
       {gitError && (
         <button
@@ -573,11 +650,6 @@ export function PiView({
         </button>
       )}
       <ErrorNotice error={error || state?.error} />
-      {state?.notice && !state.notice.startsWith("RTK rewrite:") && (
-        <div className="notice" role="status">
-          {state.notice}
-        </div>
-      )}
       <ResizableSplit
         direction="vertical"
         resizeSecond
@@ -643,22 +715,51 @@ export function PiView({
                   className={`transcript-scroll ${view}`}
                   hidden={showIntro || view === "files"}
                   ref={scroll}
+                  onWheel={(event) => {
+                    if (event.deltaY < 0) follow.current = false;
+                  }}
+                  onTouchStart={(event) => {
+                    touchY.current = event.touches[0]?.clientY ?? null;
+                  }}
+                  onTouchMove={(event) => {
+                    const y = event.touches[0]?.clientY;
+                    if (y !== undefined && touchY.current !== null && y - touchY.current > 4)
+                      follow.current = false;
+                  }}
+                  onTouchEnd={() => {
+                    touchY.current = null;
+                  }}
                   onClick={(event) => {
                     if ((event.target as Element).closest("summary, .load-older"))
                       follow.current = false;
                   }}
                   onScroll={() => {
                     const element = scroll.current!;
-                    const bottom =
-                      element.scrollHeight - element.scrollTop - element.clientHeight <
-                      90;
-                    if (
-                      ownScroll.current === null ||
-                      Math.abs(element.scrollTop - ownScroll.current) > 1
-                    )
-                      follow.current = bottom;
+                    const distance =
+                      element.scrollHeight - element.scrollTop - element.clientHeight;
+                    const isOwn =
+                      ownScroll.current !== null &&
+                      Math.abs(element.scrollTop - ownScroll.current) <= 2;
                     ownScroll.current = null;
-                    setAtBottom(bottom);
+                    if (!isOwn) {
+                      if (element.scrollTop < lastScrollTop.current - 1) {
+                        follow.current = false;
+                      } else if (distance <= 20) {
+                        follow.current = true;
+                      }
+                    }
+                    lastScrollTop.current = element.scrollTop;
+                    setAtBottom(distance < 90);
+                    const turnElements = element.querySelectorAll<HTMLElement>(".turn");
+                    if (turnElements.length > 1) {
+                      const mid = element.getBoundingClientRect().top + element.clientHeight * 0.35;
+                      let current = 0;
+                      for (let i = 0; i < turnElements.length; i++) {
+                        if (turnElements[i].getBoundingClientRect().top <= mid) current = i;
+                        else break;
+                      }
+                      setActiveTurn(current);
+                    }
                   }}
                 >
                   <div ref={content}>
@@ -683,6 +784,35 @@ export function PiView({
                     </Suspense>
                   </div>
                 </div>
+                {!showIntro && view === "chat" && loadedTurns.length > 1 && (
+                  <nav className="turn-scrubber" aria-label="Turn navigation">
+                    {Array.from({ length: Math.min(loadedTurns.length, 40) }, (_, index) => {
+                      const total = loadedTurns.length;
+                      const targetIndex = total <= 40 ? index : Math.round((index * (total - 1)) / 39);
+                      const isActive = total <= 40
+                        ? activeTurn === index
+                        : Math.round((activeTurn * 39) / Math.max(1, total - 1)) === index;
+                      const preview = loadedTurns[targetIndex];
+                      return (
+                        <button
+                          key={index}
+                          type="button"
+                          className={isActive ? "active" : undefined}
+                          aria-label={`Jump to turn ${targetIndex + 1}`}
+                          title={preview ? `${targetIndex + 1}. ${preview}` : `Turn ${targetIndex + 1}`}
+                          onClick={() => {
+                            const turnEl = scroll.current?.querySelectorAll<HTMLElement>(".turn")[targetIndex];
+                            if (turnEl) {
+                              follow.current = false;
+                              turnEl.scrollIntoView({ behavior: "smooth", block: "start" });
+                              setActiveTurn(targetIndex);
+                            }
+                          }}
+                        />
+                      );
+                    })}
+                  </nav>
+                )}
                 <div className="composer-dock" hidden={view === "files"}>
                   {!empty && !atBottom && view === "chat" && (
                     <button
@@ -716,16 +846,26 @@ export function PiView({
                       {turns !== undefined && (
                         <span>
                           <Gauge size={14} />
-                          {turns} turns · {calls} calls
+                          {turns} {turns === 1 ? "turn" : "turns"} · {calls} {calls === 1 ? "call" : "calls"}
                         </span>
                       )}
                       {contextUsage && (
-                        <span title="Context usage">
-                          <Database size={14} />
+                        <span
+                          title={`Context: ${contextUsage.tokens === null ? "—" : compactNumber(contextUsage.tokens)} / ${compactNumber(contextUsage.contextWindow)} tok`}
+                        >
+                          <ContextRing
+                            ratio={
+                              contextUsage.tokens !== null && contextUsage.contextWindow > 0
+                                ? Math.min(1, Math.max(0, contextUsage.tokens / contextUsage.contextWindow))
+                                : 0
+                            }
+                          />
                           {contextUsage.tokens === null
                             ? "—"
-                            : compactNumber(contextUsage.tokens)}{" "}
-                          / {compactNumber(contextUsage.contextWindow)} tok
+                            : `${Math.round((contextUsage.tokens / Math.max(1, contextUsage.contextWindow)) * 100)}%`}
+                          <span className="context-detail">
+                            ({contextUsage.tokens === null ? "—" : compactNumber(contextUsage.tokens)} / {compactNumber(contextUsage.contextWindow)})
+                          </span>
                         </span>
                       )}
                       {Boolean(stats?.cost) && <span>${stats!.cost.toFixed(3)}</span>}
@@ -846,6 +986,9 @@ export function PiView({
           </form>
         </Modal>
       )}
+      {state?.notice && !state.notice.startsWith("RTK rewrite:") && (
+        <NoticeToast key={state.notice} message={state.notice} />
+      )}
       {state?.dialogs[0] && (
         <ExtensionDialog
           key={state.dialogs[0].id}
@@ -864,6 +1007,90 @@ const compactNumber = (value: number) =>
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(value);
+
+function NoticeToast({ message }: { message: string }) {
+  const [dismissed, setDismissed] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [dragX, setDragX] = useState(0);
+  const dragStart = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (dismissed || paused) return;
+    const timer = window.setTimeout(() => setDismissed(true), 6000);
+    return () => window.clearTimeout(timer);
+  }, [dismissed, paused]);
+
+  if (dismissed) return null;
+  const opacity = dragX > 0 ? Math.max(0.2, 1 - dragX / 160) : 1;
+  return (
+    <div
+      className="notice-toast"
+      role="status"
+      style={
+        dragX
+          ? { transform: `translateX(${dragX}px)`, opacity, transition: "none" }
+          : undefined
+      }
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onPointerDown={(event) => {
+        if ((event.target as Element).closest("button")) return;
+        dragStart.current = event.clientX;
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        if (dragStart.current === null) return;
+        setDragX(Math.max(0, event.clientX - dragStart.current));
+      }}
+      onPointerUp={(event) => {
+        if (dragStart.current === null) return;
+        const delta = event.clientX - dragStart.current;
+        dragStart.current = null;
+        if (delta > 60) setDismissed(true);
+        else setDragX(0);
+      }}
+      onPointerCancel={() => {
+        dragStart.current = null;
+        setDragX(0);
+      }}
+    >
+      <span className="notice-toast-text">{message}</span>
+      <IconButton
+        className="icon-button notice-toast-close"
+        label="Dismiss notice"
+        onClick={() => setDismissed(true)}
+      >
+        <X size={14} />
+      </IconButton>
+    </div>
+  );
+}
+
+function ContextRing({ ratio }: { ratio: number }) {
+  const r = 5.5;
+  const c = 2 * Math.PI * r;
+  const offset = c * (1 - ratio);
+  const tone = ratio >= 0.9 ? "var(--error)" : ratio >= 0.75 ? "var(--orange)" : "var(--accent)";
+  return (
+    <svg className="context-ring" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <circle cx="7" cy="7" r={r} fill="none" stroke="var(--border)" strokeWidth="1.8" />
+      {ratio > 0 && (
+        <circle
+          cx="7"
+          cy="7"
+          r={r}
+          fill="none"
+          stroke={tone}
+          strokeWidth="1.8"
+          strokeDasharray={c}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          transform="rotate(-90 7 7)"
+        />
+      )}
+    </svg>
+  );
+}
 function ExtensionDialog({
   request,
   respond,

@@ -355,11 +355,12 @@ export function Composer({
         <div className="composer-toolbar">
           {cwd && (
             <IconButton
+              className="icon-button attach-button"
               label="Attach files"
               disabled={disabled || pending || picking || restoring}
               onClick={() => void attach()}
             >
-              {picking ? <LoaderCircle size={19} className="spin" /> : <Paperclip size={19} />}
+              {picking ? <LoaderCircle size={18} className="spin" /> : <Paperclip size={17} />}
             </IconButton>
           )}
           <div className="composer-options">

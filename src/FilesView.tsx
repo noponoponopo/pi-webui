@@ -18,6 +18,8 @@ import { ErrorNotice, IconButton, Modal } from "./ui";
 import { CodeEditor } from "./CodeEditor";
 import { FileTree } from "./FileTree";
 import { ResizableSplit } from "./ResizableSplit";
+import { GitHistory } from "./GitHistory";
+import { PullRequests } from "./PullRequests";
 import "./git.css";
 
 type FileDraft = { file: GitFile; text: string };
@@ -43,6 +45,7 @@ export function FilesView({
   const documentsRef = useRef(documents);
   documentsRef.current = documents;
   const [changesOnly, setChangesOnly] = useState(false);
+  const [gitView, setGitView] = useState<'files' | 'history' | 'pulls'>('files');
   const [showDiff, setShowDiff] = useState(false);
   const [selectedPath, setSelectedPath] = useState("");
   const [reviewedFileVersions, setReviewedFileVersions] = useState<
@@ -470,7 +473,8 @@ export function FilesView({
           before continuing.
         </p>
       )}
-      <ResizableSplit
+      {status?.isRepo && <div className="git-history-tabs">{(['files', 'history', 'pulls'] as const).map((view) => <button key={view} aria-pressed={gitView === view} disabled={busy} onClick={() => setGitView(view)}>{view === 'pulls' ? 'Pull requests' : view === 'history' ? 'History' : 'Files'}</button>)}</div>}
+      {gitView === 'pulls' && status?.isRepo ? <PullRequests key={status.root} status={status} onBusy={(value) => setBusyAction(value ? 'pull-request' : '')} /> : gitView === 'history' && status?.isRepo ? <GitHistory status={status} disabled={loading || saving || dirtyRef.current || branchBusy} onChange={refreshStatus} onBusy={(value) => setBusyAction(value ? 'sync' : '')} /> : <ResizableSplit
         className="git-content"
         initialSize={250}
         minSize={130}
@@ -609,8 +613,8 @@ export function FilesView({
             )}
           </section>
         }
-      />
-      {status?.isRepo && (stagedCount > 0 || Boolean(commitMessage)) && (
+      />}
+      {gitView === 'files' && status?.isRepo && (stagedCount > 0 || Boolean(commitMessage)) && (
         <div className="git-commit-bar">
           <input
             aria-label="Commit message"

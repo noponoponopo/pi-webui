@@ -22,6 +22,8 @@ import { PiSessions } from './pi';
 import { Store } from './store';
 import {
   getGitStatus,
+  gitHistory,
+  syncGit,
   listFiles,
   revealWorkspacePath,
   trashWorkspacePath,
@@ -35,6 +37,10 @@ import {
 import { listenLocal, publishRuntime, stateDirectory } from './local-runtime';
 import { openFile, pickFiles } from './native-files';
 import { Uploads } from './uploads';
+import { pullRequests } from './pull-requests';
+import { Automations } from './automations';
+import { readHistory } from './history';
+import { messageText } from '../shared/transcript';
 
 type Body = Record<string, unknown>;
 function text(body: Body, key: string, empty = false, max = 100_000): string {
@@ -326,6 +332,13 @@ export function startServer(
     ownershipDir: join(dirname(bridgeSocket), 'leases'),
     isOwned: (file) => bridge.owns(file),
   });
+  const automations = new Automations(dataDir, async (task) => {
+    const session = await pi.create(task.cwd);
+    const runtime = await runtimeFor(session.id);
+    await runtime.command({ type: 'set_session_name', name: task.name }).catch(() => {});
+    await runtime.command({ type: 'prompt', message: task.prompt });
+    return session;
+  });
   const storedByFile = (file: string) => {
     const path = canonicalFile(file);
     return pi.list().find((session) => session.file && canonicalFile(session.file) === path);
@@ -458,6 +471,10 @@ export function startServer(
   async function api(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
     if (request.method === 'GET') {
+      if (path === '/api/git/history') {
+        const query = Object.fromEntries(url.searchParams);
+        return Response.json(await gitHistory(text(query, 'cwd'), query.commit, query.limit === undefined ? 200 : Number(query.limit)), { headers: { 'Cache-Control': 'no-store' } });
+      }
       if (path === '/api/git')
         return Response.json(
           await getGitStatus(text(Object.fromEntries(url.searchParams), 'cwd')),
@@ -496,6 +513,55 @@ export function startServer(
         }, (serialized) => serialized);
       }
       if (path === '/api/pi/history') return Response.json(await pi.history());
+      if (path === '/api/automations')
+        return Response.json(automations.list(), { headers: { 'Cache-Control': 'no-store' } });
+      if (path === '/api/pi/export') {
+        const rawPath = url.searchParams.get('path') ?? '';
+        const format = url.searchParams.get('format') === 'jsonl' ? 'jsonl' : 'md';
+        const file = await pi.sessionFile(rawPath);
+        if (format === 'jsonl') {
+          const safeName = (file.split('/').pop() || 'session.jsonl').replace(/[^\w.-]+/g, '_');
+          return new Response(Bun.file(file), {
+            headers: {
+              'Content-Type': 'application/x-ndjson; charset=utf-8',
+              'Content-Disposition': `attachment; filename="${safeName}"`,
+              'Cache-Control': 'no-store',
+            },
+          });
+        }
+        const history = await readHistory(file);
+        const title = (history.name || 'session').replace(/[\r\n]+/g, ' ').trim();
+        const safeName = `${title.replace(/[^\p{L}\p{N}_-]+/gu, '_').slice(0, 60) || 'session'}.md`;
+        const lines: string[] = [
+          `# ${title}`,
+          '',
+          history.cwd ? `- Workspace: \`${history.cwd}\`` : '',
+          `- Exported: ${new Date().toISOString()}`,
+          '',
+        ].filter((line, idx) => line !== '' || idx > 0);
+        for (const { message } of history.transcript.items) {
+          if (message.role === 'user') {
+            lines.push('---', '', '## User', '', messageText(message), '');
+          } else if (message.role === 'assistant') {
+            const body = messageText(message).trim();
+            const tools = Array.isArray(message.content)
+              ? message.content.flatMap((block) => (block.type === 'toolCall' ? [`\`${block.name}\``] : []))
+              : [];
+            if (body || tools.length) {
+              lines.push('## Assistant', '');
+              if (tools.length) lines.push(`> Tools: ${tools.join(', ')}`, '');
+              if (body) lines.push(body, '');
+            }
+          }
+        }
+        return new Response(lines.join('\n'), {
+          headers: {
+            'Content-Type': 'text/markdown; charset=utf-8',
+            'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+            'Cache-Control': 'no-store',
+          },
+        });
+      }
       const content = path.match(/^\/api\/pi\/content\/([^/]+)$/);
       if (content) return displayResponse(display.directory, content[1]);
       const messages = path.match(/^\/api\/pi\/([^/]+)\/messages$/);
@@ -537,6 +603,46 @@ export function startServer(
       const body: Body = await request.json();
       if (!body || typeof body !== 'object' || Array.isArray(body))
         throw new Error('Invalid request');
+      if (path === '/api/automations') {
+        return Response.json(
+          automations.create({
+            name: text(body, 'name', false, 200),
+            cwd: text(body, 'cwd', false, 4096),
+            prompt: text(body, 'prompt', false, 100_000),
+            intervalMinutes: Number(body.intervalMinutes ?? 60),
+            enabled: body.enabled !== false,
+          }),
+        );
+      }
+      if (path === '/api/automations/update') {
+        return Response.json(
+          automations.update(text(body, 'id', false, 64), {
+            ...(body.name !== undefined ? { name: text(body, 'name', false, 200) } : {}),
+            ...(body.cwd !== undefined ? { cwd: text(body, 'cwd', false, 4096) } : {}),
+            ...(body.prompt !== undefined ? { prompt: text(body, 'prompt', false, 100_000) } : {}),
+            ...(body.intervalMinutes !== undefined ? { intervalMinutes: Number(body.intervalMinutes) } : {}),
+            ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+          }),
+        );
+      }
+      if (path === '/api/automations/delete') {
+        automations.remove(text(body, 'id', false, 64));
+        return Response.json({ ok: true });
+      }
+      if (path === '/api/automations/run') {
+        return Response.json(await automations.runNow(text(body, 'id', false, 64)));
+      }
+      if (path === '/api/git/pull-requests') {
+        return Response.json(await pullRequests({
+          cwd: text(body, 'cwd', false, 4096), remote: text(body, 'remote', false, 1024),
+          provider: text(body, 'provider'), action: text(body, 'action'),
+          number: typeof body.number === 'number' ? body.number : undefined,
+          title: body.title === undefined ? undefined : text(body, 'title', false, 500),
+          body: body.body === undefined ? undefined : text(body, 'body', true, 50_000),
+          head: body.head === undefined ? undefined : text(body, 'head', false, 1024),
+          base: body.base === undefined ? undefined : text(body, 'base', false, 1024),
+        }), { headers: { 'Cache-Control': 'no-store' } });
+      }
       if (path === '/api/files/upload/cancel') {
         await uploads.cancel(text(body, 'id', false, 36));
         return Response.json({ ok: true });
@@ -612,6 +718,8 @@ export function startServer(
             path === '/api/git/create-branch',
           ),
         );
+      if (path === '/api/git/sync')
+        return Response.json(await syncGit(text(body, 'cwd'), text(body, 'action'), text(body, 'remote'), text(body, 'expectedIndexVersion')));
       if (path === '/api/git/commit')
         return Response.json(
           await commitGit(
@@ -771,6 +879,7 @@ export function startServer(
     terminals,
     ready: bridge.ready,
     async stop() {
+      automations.stop();
       await server.stop(true);
       await bridge.stop();
       await terminals.stop();

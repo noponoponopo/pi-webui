@@ -12,6 +12,14 @@ export function Workspace({
   creating = false,
   pinned,
   onPin,
+  defaultOpen = false,
+  open: controlledOpen,
+  onOpenChange,
+  onDragStart,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  dragOver = false,
 }: {
   title: string;
   path?: string;
@@ -22,10 +30,20 @@ export function Workspace({
   creating?: boolean;
   pinned: boolean;
   onPin: () => void;
+  defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  onDragStart?: () => void;
+  onDragOver?: (event: React.DragEvent) => void;
+  onDragLeave?: () => void;
+  onDrop?: (event: React.DragEvent) => void;
+  dragOver?: boolean;
 }) {
   const [limit, setLimit] = useState(5);
   const details = useRef<HTMLDetailsElement>(null);
   const selectedIndex = rows.findIndex((row) => row.key === selectedKey);
+  const forcedOpen = pinned || Boolean(query) || selectedIndex >= 0;
+  const isOpen = forcedOpen || (controlledOpen ?? defaultOpen);
   useEffect(() => {
     setLimit(5);
   }, [query]);
@@ -34,7 +52,6 @@ export function Workspace({
     setLimit((current) =>
       Math.max(current, Math.ceil((selectedIndex + 1) / 5) * 5),
     );
-    if (details.current) details.current.open = true;
   }, [selectedKey, selectedIndex]);
   useEffect(() => {
     if (selectedIndex < 0) return;
@@ -48,10 +65,27 @@ export function Workspace({
     row?.scrollIntoView({ block: 'nearest' });
   }, [selectedKey, limit]);
   return (
-    <div className="workspace-group">
-      <details className="workspace" ref={details} open>
-        <summary title={path || title}>
-          <FolderOpen size={18} />
+    <div
+      className={`workspace-group ${dragOver ? 'drag-over' : ''}`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <details
+        className="workspace"
+        ref={details}
+        open={isOpen}
+        onToggle={(event) => {
+          const next = event.currentTarget.open;
+          if (!forcedOpen && next !== isOpen) onOpenChange?.(next);
+        }}
+      >
+        <summary
+          title={path || title}
+          draggable={Boolean(onDragStart)}
+          onDragStart={onDragStart}
+        >
+          <FolderOpen size={17} />
           <span>{title}</span>
         </summary>
         {rows.slice(0, limit).map((row) => row.content)}
@@ -61,7 +95,7 @@ export function Workspace({
             aria-label={`Show more sessions in ${path || title}`}
             onClick={() => setLimit(limit + 5)}
           >
-            …
+            Show more ({rows.length - limit})
           </button>
         )}
       </details>

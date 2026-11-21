@@ -30,6 +30,10 @@ git clone https://github.com/noponoponopo/pi-webui.git && cd pi-webui
 pi-webui
 ```
 
+## GitとPR
+
+Files画面のHistoryでコミット履歴・差分とfetch / pull / pushを操作できます。pullはfast-forwardのみです。Pull requests画面はGitHubの`gh`、Gitea / Forgejoの`tea`、GitLabの`glab`と、それぞれのCLIで設定済みの認証を使います。`tea`のログイン名はSSH alias、またはログインURLのホストをremoteと一致させてください。
+
 ## Tailscale 内からの操作
 
 サーバーは loopback のまま、Tailscale Serve で HTTPS 公開します。接続できる tailnet デバイスは、この Mac 上のセッション・ファイル・ターミナルを操作できます。Funnel は使いません。

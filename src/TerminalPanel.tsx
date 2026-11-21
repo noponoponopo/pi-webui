@@ -99,6 +99,9 @@ function TerminalScreen({ id }: { id: string }) {
   const queue = useRef(Promise.resolve());
   const [error, setError] = useState("");
   const [closed, setClosed] = useState(false);
+  const [ctrlActive, setCtrlActive] = useState(false);
+  const ctrlRef = useRef(false);
+  ctrlRef.current = ctrlActive;
   const ready = useRef(false);
   const render = (update: TerminalUpdate) => {
     const term = terminal.current;
@@ -136,7 +139,18 @@ function TerminalScreen({ id }: { id: string }) {
     terminal.current = term;
     for (const update of pending.current) render(update);
     pending.current = [];
-    const input = term.onData((text) => send("input", { text }));
+    const input = term.onData((text) => {
+      if (ctrlRef.current && text.length === 1) {
+        const code = text.toUpperCase().charCodeAt(0);
+        if (code >= 64 && code <= 95) {
+          setCtrlActive(false);
+          send("input", { text: String.fromCharCode(code - 64) });
+          return;
+        }
+        setCtrlActive(false);
+      }
+      send("input", { text });
+    });
     const sized = term.onResize(({ cols, rows }) => send("resize", { cols, rows }));
     const resize = () => { if (host.current?.clientWidth && host.current.clientHeight) fit.fit(); };
     const observer = new ResizeObserver(resize);
@@ -155,12 +169,43 @@ function TerminalScreen({ id }: { id: string }) {
     const term = terminal.current;
     if (connected && !closed && term) send("resize", { cols: term.cols, rows: term.rows });
   }, [connected, closed]);
+  const sendSoftKey = (text: string) => {
+    setCtrlActive(false);
+    send("input", { text });
+    terminal.current?.focus();
+  };
   return (
     <>
       <ErrorNotice error={error} />
       {!connected && <div className="notice">Connecting to terminal…</div>}
       {connected && closed && <div className="notice">This terminal has been closed.</div>}
       <div className="workspace-terminal" ref={host} aria-label="Terminal screen" />
+      <div className="terminal-softkeys" role="toolbar" aria-label="Terminal quick keys">
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\x1b")}>Esc</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\t")}>Tab</button>
+        <button
+          type="button"
+          className={ctrlActive ? "active" : undefined}
+          aria-pressed={ctrlActive}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            setCtrlActive((v) => !v);
+            terminal.current?.focus();
+          }}
+        >
+          Ctrl
+        </button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\x03")}>^C</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\x04")}>^D</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\x0c")}>^L</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\x1b[A")} aria-label="Up arrow">↑</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\x1b[B")} aria-label="Down arrow">↓</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\x1b[D")} aria-label="Left arrow">←</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("\x1b[C")} aria-label="Right arrow">→</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("/")}>/</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("|")}>|</button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => sendSoftKey("~")}>~</button>
+      </div>
     </>
   );
 }

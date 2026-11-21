@@ -67,6 +67,7 @@ async function runGit(
       maxBuffer: MAX_GIT_OUTPUT,
       timeout,
       windowsHide: true,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" },
     });
     return { stdout, exitCode: 0 };
   } catch (error) {
@@ -249,6 +250,52 @@ export async function getGitStatus(cwd: string): Promise<GitStatus> {
     files: parseStatus(statusOutput),
     indexVersion: await indexVersion(root, branchOutput),
   };
+}
+
+export async function gitHistory(cwd: string, commit?: string, limit = 200) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000) throw new Error("Invalid history limit");
+  const root = await repositoryRoot(cwd);
+  if (!root) throw new Error("Not a Git repository");
+  if (commit) {
+    if (!/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(commit)) throw new Error("Invalid commit");
+    return { detail: await git(root, ["show", "--format=fuller", "--stat", "--patch", "--no-ext-diff", commit, "--"]) };
+  }
+  const [graph, remotes, upstream] = await Promise.all([
+    git(root, ["log", "--all", "--graph", "--date=short", "--format=%H%x09%h%x09%d%x09%s%x09%an%x09%ad", `-${limit}`]),
+    git(root, ["remote"]),
+    git(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], [128]),
+  ]);
+  return { graph, remotes: remotes.trim().split("\n").filter(Boolean), upstream: upstream.trim() };
+}
+
+export async function syncGit(cwd: string, action: string, remote: string, expectedIndexVersion: string) {
+  if (!["fetch", "pull", "push"].includes(action)) throw new Error("Invalid Git action");
+  expectedIndex(expectedIndexVersion);
+  const root = await repositoryRoot(cwd);
+  if (!root) throw new Error("Not a Git repository");
+  return withRepositoryLock(root, async () => {
+    const status = await currentRepoStatus(root);
+    if (status.indexVersion !== expectedIndexVersion) throw new GitIndexConflictError();
+    const remotes = (await git(root, ["remote"])).trim().split("\n");
+    if (!remotes.includes(remote)) throw new Error("Select an existing remote");
+    if (action === "fetch") await git(root, ["fetch", "--", remote], [], 120_000);
+    else {
+      if (!status.branch) throw new Error("Switch to a branch first");
+      const trackingRemote = (await git(root, ["config", "--get", `branch.${status.branch}.remote`], [1])).trim();
+      const trackingRef = (await git(root, ["config", "--get", `branch.${status.branch}.merge`], [1])).trim();
+      if (trackingRemote && (trackingRemote !== remote || !trackingRef.startsWith("refs/heads/")))
+        throw new Error("Select the branch's upstream remote before syncing");
+      if (action === "pull") {
+        if (!trackingRemote || !trackingRef) throw new Error("Branch has no upstream");
+        await git(root, ["pull", "--ff-only", "--", remote, trackingRef], [], 120_000);
+      } else if (trackingRemote && trackingRef) {
+        await git(root, ["push", "--no-follow-tags", "--recurse-submodules=no", "--", remote, `refs/heads/${status.branch}:${trackingRef}`], [], 120_000);
+      } else {
+        await git(root, ["push", "--no-follow-tags", "--recurse-submodules=no", "--set-upstream", "--", remote, `refs/heads/${status.branch}:refs/heads/${status.branch}`], [], 120_000);
+      }
+    }
+    return getGitStatus(root);
+  });
 }
 
 export async function listFiles(

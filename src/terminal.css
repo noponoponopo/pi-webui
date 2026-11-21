@@ -1,19 +1,20 @@
 .pane-toggles {
   display: flex;
-  gap: 4px;
-  margin-left: auto;
+  gap: 2px;
 }
 .pane-toggles > button {
-  border-radius: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
   color: var(--muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding-inline: 14px;
+  padding: 5px;
 }
 .pane-toggles > button[aria-pressed="true"] {
-  color: var(--text);
-  background: var(--surface);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .terminal-dock {
   flex: 1;
@@ -69,4 +70,37 @@
 }
 .workspace-terminal .xterm {
   height: 100%;
+}
+.terminal-softkeys {
+  display: none;
+  gap: 5px;
+  padding: 6px 8px max(6px, env(safe-area-inset-bottom));
+  background: #1b1b1b;
+  border-top: 1px solid #2e2e2e;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+  -webkit-overflow-scrolling: touch;
+}
+.terminal-softkeys::-webkit-scrollbar {
+  display: none;
+}
+.terminal-softkeys > button {
+  flex: 0 0 auto;
+  min-width: 36px;
+  min-height: 34px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  background: #2b2b2b;
+  color: #eeeeee;
+  font: 13px var(--mono);
+}
+.terminal-softkeys > button.active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .terminal-softkeys {
+    display: flex;
+  }
 }

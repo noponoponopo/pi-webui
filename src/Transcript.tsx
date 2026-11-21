@@ -303,6 +303,114 @@ const ProcessRow = memo(function ProcessRow(step: ChatStep & {
   );
 });
 
+function workSummaryLabel(steps: ChatStep[]) {
+  const toolSteps = steps.filter((step) => step.kind === 'tool');
+  const thinkCount = steps.filter((step) => step.kind === 'thinking').length;
+  const contextCount = steps.filter((step) => step.kind === 'context').length;
+  const parts: string[] = [];
+  if (toolSteps.length) {
+    const uniqueNames = [...new Set(toolSteps.map((step) => step.name))];
+    const nameList =
+      uniqueNames.length <= 3
+        ? uniqueNames.join(', ')
+        : `${uniqueNames.slice(0, 2).join(', ')} +${uniqueNames.length - 2}`;
+    parts.push(`${toolSteps.length} tool call${toolSteps.length === 1 ? '' : 's'} (${nameList})`);
+  }
+  if (thinkCount) parts.push(`${thinkCount} think`);
+  if (contextCount && !toolSteps.length && !thinkCount)
+    parts.push(`${contextCount} context`);
+  return parts.join(' · ') || `${steps.length} step${steps.length === 1 ? '' : 's'}`;
+}
+
+type WorkSegment =
+  | { kind: 'text'; id: string; text: string }
+  | { kind: 'work'; id: string; steps: ChatStep[] };
+
+function segmentSteps(steps: ChatStep[]): WorkSegment[] {
+  const segments: WorkSegment[] = [];
+  for (const step of steps) {
+    if (step.kind === 'text') {
+      segments.push({ kind: 'text', id: step.id, text: step.text });
+    } else {
+      const prev = segments.at(-1);
+      if (prev && prev.kind === 'work') prev.steps.push(step);
+      else segments.push({ kind: 'work', id: step.id, steps: [step] });
+    }
+  }
+  return segments;
+}
+
+function WorkBlock({
+  steps,
+  progress,
+  active,
+  grouped,
+}: {
+  steps: ChatStep[];
+  progress: Projection['tools'];
+  active: boolean;
+  grouped: boolean;
+}) {
+  const renderRows = (list: ChatStep[]) => (
+    <div className="work-items">
+      {list.map((step) => (
+        <ProcessRow
+          {...step}
+          tool={step.kind === 'tool' ? progress[step.callId] : undefined}
+          key={step.id}
+        />
+      ))}
+    </div>
+  );
+
+  // Only keep the currently running step(s) (or last step) expanded in the active tail;
+  // fold everything earlier into a compact clickable disclosure.
+  if (active) {
+    const firstActive = steps.findIndex(
+      (step) => step.kind === 'tool' && progress[step.callId]?.running,
+    );
+    const splitAt = firstActive >= 0 ? firstActive : Math.max(0, steps.length - 1);
+    const completed = steps.slice(0, splitAt);
+    const live = steps.slice(splitAt);
+    return (
+      <div className="work-live-block">
+        {completed.length > 0 && (
+          <Disclosure
+            className="work-group compact"
+            summary={
+              <>
+                <span>{workSummaryLabel(completed)}</span>
+                <ChevronRight className="disclosure-chevron" size={14} />
+              </>
+            }
+          >
+            {() => renderRows(completed)}
+          </Disclosure>
+        )}
+        {renderRows(live)}
+      </div>
+    );
+  }
+
+  if (!grouped && steps.length === 1 && steps[0].kind === 'context') {
+    return renderRows(steps);
+  }
+
+  return (
+    <Disclosure
+      className="work-group compact"
+      summary={
+        <>
+          <span>{workSummaryLabel(steps)}</span>
+          <ChevronRight className="disclosure-chevron" size={14} />
+        </>
+      }
+    >
+      {() => renderRows(steps)}
+    </Disclosure>
+  );
+}
+
 function Process({
   steps,
   progress,
@@ -315,35 +423,29 @@ function Process({
   grouped: boolean;
 }) {
   if (!steps.length) return null;
-  const rows = () => (
-    <div className="work-items">
-      {steps.map((step) => (
-        <ProcessRow
-          {...step}
-          tool={step.kind === 'tool' ? progress[step.callId] : undefined}
-          key={step.id}
-        />
-      ))}
-    </div>
-  );
-  if (running || !grouped) return rows();
-  const calls = steps.filter((step) => step.kind === 'tool').length;
+  const segments = segmentSteps(steps);
   return (
-    <Disclosure
-      className="work-group"
-      summary={
-        <>
-          <span>
-            {calls
-              ? `${calls} tool call${calls === 1 ? '' : 's'}`
-              : `${steps.length} step${steps.length === 1 ? '' : 's'}`}
-          </span>
-          <ChevronRight className="disclosure-chevron" size={15} />
-        </>
-      }
-    >
-      {rows}
-    </Disclosure>
+    <div className="process-flow">
+      {segments.map((segment, index) => {
+        if (segment.kind === 'text') {
+          return (
+            <div className="assistant-interlude" key={segment.id}>
+              <Markdown text={segment.text} />
+            </div>
+          );
+        }
+        const isActiveTail = running && index === segments.length - 1;
+        return (
+          <WorkBlock
+            key={segment.id}
+            steps={segment.steps}
+            progress={progress}
+            active={isActiveTail}
+            grouped={grouped}
+          />
+        );
+      })}
+    </div>
   );
 }
 
