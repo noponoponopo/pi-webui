@@ -23,8 +23,16 @@ export function activeHistory(
     id = entry.parentId;
   }
   return branch.reverse().flatMap((entry): TranscriptItem[] => {
-    if (entry.type === "message")
-      return [{ id: entry.id, message: entry.message }];
+    if (entry.type === "message") {
+      let durationMs: number | undefined;
+      if (entry.message.role === "assistant" && entry.message.stopReason !== "pending") {
+        const endMs = Date.parse(entry.timestamp);
+        if (Number.isFinite(endMs) && endMs > entry.message.timestamp) {
+          durationMs = endMs - entry.message.timestamp;
+        }
+      }
+      return [{ id: entry.id, message: entry.message, ...(durationMs ? { durationMs } : {}) }];
+    }
     if (entry.type === "custom_message")
       return [
         {
@@ -148,7 +156,9 @@ export function reconcileSnapshot(previous: PiSnapshot | undefined, next: PiSnap
   const oldItems = previous.transcript.items;
   const items = next.transcript.items.map((item, index) => {
     const old = oldItems[index];
-    return old?.id === item.id && sameJson(old.message, item.message) ? old : item;
+    return old?.id === item.id && old.durationMs === item.durationMs && sameJson(old.message, item.message)
+      ? old
+      : item;
   });
   return {
     ...next,
@@ -198,16 +208,24 @@ export function applyEvent(previous: Projection, event: PiEvent): Projection {
       if (event.message.role !== "assistant") return previous;
       next.partial = event.message;
       break;
-    case "message_end":
+    case "message_end": {
+      const durationMs =
+        event.message.role === "assistant" &&
+        event.message.stopReason !== "pending" &&
+        Date.now() > event.message.timestamp
+          ? Date.now() - event.message.timestamp
+          : undefined;
       next.items = [
         ...next.items,
         {
           id: `live-${previous.total ?? next.items.length}-${event.message.timestamp}`,
           message: event.message,
+          ...(durationMs ? { durationMs } : {}),
         },
       ];
       if (event.message.role === "assistant") next.partial = undefined;
       break;
+    }
     case "message_update": {
       if (next.partial?.role !== "assistant") return previous;
       const update = event.assistantMessageEvent;

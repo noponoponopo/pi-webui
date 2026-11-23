@@ -163,16 +163,25 @@ function MessageActions({
     </>
   );
 }
+type TurnSpeed = {
+  tps: number;
+  output: number;
+  durationMs: number;
+  calls: number;
+};
+
 const Answer = memo(function Answer({
   message,
   entryId,
   onBranch,
   branchDisabled,
+  turnSpeed,
 }: {
   message: Message;
   entryId?: string;
   onBranch?: BranchAction;
   branchDisabled?: string;
+  turnSpeed?: TurnSpeed;
 }) {
   const text = textOnly(message);
   return (
@@ -196,6 +205,14 @@ const Answer = memo(function Answer({
               branchDisabled={branchDisabled}
               position="at"
             />
+            {turnSpeed && (
+              <span
+                className="turn-tps"
+                title={`Turn average: ${turnSpeed.tps.toFixed(1)} tok/s (${turnSpeed.output.toLocaleString()} out tok / ${(turnSpeed.durationMs / 1000).toFixed(1)}s across ${turnSpeed.calls} ${turnSpeed.calls === 1 ? 'call' : 'calls'})`}
+              >
+                {turnSpeed.tps >= 100 ? Math.round(turnSpeed.tps) : turnSpeed.tps.toFixed(1)} tok/s
+              </span>
+            )}
           </div>
         )}
     </div>
@@ -466,6 +483,26 @@ const Turn = memo(function Turn({
     () => presentTurn(turn, partial),
     [turn, partial],
   );
+  const turnSpeed = useMemo<TurnSpeed | undefined>(() => {
+    let output = 0;
+    let durationMs = 0;
+    let calls = 0;
+    for (const item of turn.items) {
+      if (
+        item.message.role === 'assistant' &&
+        typeof item.message.usage?.output === 'number' &&
+        item.message.usage.output > 0 &&
+        typeof item.durationMs === 'number' &&
+        item.durationMs > 0
+      ) {
+        output += item.message.usage.output;
+        durationMs += item.durationMs;
+        calls++;
+      }
+    }
+    if (output <= 0 || durationMs <= 0) return undefined;
+    return { tps: output / (durationMs / 1000), output, durationMs, calls };
+  }, [turn.items]);
   return (
     <section className="turn">
       {turn.user && (
@@ -494,6 +531,7 @@ const Turn = memo(function Turn({
           entryId={turn.items.findLast((item) => item.message === answer)?.id}
           onBranch={onBranch}
           branchDisabled={branchDisabled}
+          turnSpeed={turnSpeed}
         />
       )}
     </section>

@@ -64,7 +64,7 @@ export type HistoryRow = {
   updatedAt: number;
   hasMessages?: boolean;
 };
-export type TranscriptItem = { id: string; message: Message };
+export type TranscriptItem = { id: string; message: Message; durationMs?: number };
 export type ToolProgress = {
   name: string;
   args: unknown;
