@@ -135,23 +135,48 @@ export async function startService() {
   );
 }
 
+export async function restartService(force = false) {
+  macOS();
+  const runtime = await liveRuntime();
+  if (!runtime || !loaded()) {
+    await stopService(force);
+    return startService();
+  }
+  await assertIdle(runtime, force);
+  launchctl('kickstart', '-k', target());
+  for (let i = 0; i < 200; i++) {
+    const next = await liveRuntime();
+    if (next && next.pid !== runtime.pid) return next;
+    await Bun.sleep(150);
+  }
+  throw new Error(
+    `Service did not become ready; see ${join(stateDirectory(), 'logs/server.error.log')}`,
+  );
+}
+
+async function assertIdle(
+  runtime: NonNullable<Awaited<ReturnType<typeof liveRuntime>>>,
+  force: boolean,
+) {
+  if (force) return;
+  const catalog = await fetch(`${runtime.url}/api/bootstrap`).then((r) =>
+    r.json(),
+  );
+  if (
+    catalog.sessions.some(
+      (s: { kind: string; running: boolean; waiting: boolean }) =>
+        s.kind !== 'cli' && (s.running || s.waiting),
+    )
+  )
+    throw new Error(
+      'A Web session is active. Wait for it, or use --force to interrupt it. Native CLIs are not stopped.',
+    );
+}
+
 export async function stopService(force = false) {
   macOS();
   const runtime = await liveRuntime();
-  if (runtime && !force) {
-    const catalog = await fetch(`${runtime.url}/api/bootstrap`).then((r) =>
-      r.json(),
-    );
-    if (
-      catalog.sessions.some(
-        (s: { kind: string; running: boolean; waiting: boolean }) =>
-          s.kind !== 'cli' && (s.running || s.waiting),
-      )
-    )
-      throw new Error(
-        'A Web session is active. Wait for it, or use --force to interrupt it. Native CLIs are not stopped.',
-      );
-  }
+  if (runtime) await assertIdle(runtime, force);
   if (loaded()) launchctl('bootout', target());
   else if (runtime) process.kill(runtime.pid, 'SIGTERM');
   if (!runtime) return;

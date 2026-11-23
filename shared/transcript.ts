@@ -72,6 +72,28 @@ export function messageText(message: Message): string {
     .join("\n");
 }
 
+export function estimateMessageTokens(message: Message): number {
+  if (message.role === "assistant" && typeof message.usage?.output === "number" && message.usage.output > 0) {
+    return Math.max(1, Math.round(message.usage.output));
+  }
+  let chars = messageText(message).length;
+  let imageCount = 0;
+  if ("content" in message && Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (block.type === "image") imageCount++;
+    }
+  }
+  if (message.role === "system") {
+    for (const value of Object.values(message.sections ?? {})) {
+      if (typeof value === "string") chars += value.length;
+    }
+    if (message.toolsAdded?.length) {
+      chars += JSON.stringify(message.toolsAdded).length;
+    }
+  }
+  return Math.max(1, Math.ceil(chars / 4) + imageCount * 1000);
+}
+
 const completionCache = new WeakMap<TranscriptItem[], SessionRow["completion"]>();
 
 export function completionPreview(projection?: Projection): SessionRow["completion"] {

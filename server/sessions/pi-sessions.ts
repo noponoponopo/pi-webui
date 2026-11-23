@@ -42,7 +42,13 @@ import type {
 import { listHistory, sessionMetadata } from "./history";
 import { noColorTheme, SdkUI } from "./sdk-ui";
 import { directory, Store } from "../store";
-import { sessionEntries, sessionHistory, sessionHistoryEntry, toPiEvent } from "./session-events";
+import {
+  sessionEntries,
+  sessionHistory,
+  sessionHistoryEntry,
+  toPiEvent,
+  withExtraSessionStats,
+} from "./session-events";
 import { addWebUIPrompt } from "./webui-prompt";
 import { errorMessage } from "../util";
 
@@ -190,6 +196,53 @@ class PiRuntime {
 
   async refresh(): Promise<void> {
     if (this.session) this.updateState();
+  }
+
+  async reloadModels(): Promise<void> {
+    if (!this.session && this.state.loading) {
+      await this.ready.catch(() => {});
+    }
+    if (!this.session) return;
+    const session = this.session;
+    await session.modelRuntime.refresh({ allowNetwork: false });
+    await session.settingsManager.reload();
+    if (!session.isIdle) {
+      this.updateState(false);
+      return;
+    }
+    const available = session.modelRuntime.getAvailableSnapshot();
+    const current = session.model;
+    if (current) {
+      const refreshed = available.find(
+        (candidate) =>
+          candidate.provider === current.provider && candidate.id === current.id,
+      );
+      if (refreshed) {
+        session.agent.state.model = refreshed;
+        if (!session.getAvailableThinkingLevels().includes(session.thinkingLevel)) {
+          session.setThinkingLevel(session.thinkingLevel);
+        }
+      } else {
+        session.agent.state.model = undefined as never;
+        this.state = {
+          ...this.state,
+          notice: `Active model ${current.provider}/${current.id} is no longer available. Select a model to continue.`,
+        };
+      }
+    } else if (available.length > 0) {
+      const defaultProvider = session.settingsManager.getDefaultProvider();
+      const defaultModel = session.settingsManager.getDefaultModel();
+      const initial =
+        (defaultProvider && defaultModel
+          ? available.find(
+              (candidate) =>
+                candidate.provider === defaultProvider &&
+                candidate.id === defaultModel,
+            )
+          : undefined) ?? available[0];
+      if (initial) await session.setModel(initial).catch(() => {});
+    }
+    this.updateState(false);
   }
 
   async respond(response: RpcExtensionUIResponse): Promise<void> {
@@ -619,7 +672,7 @@ class PiRuntime {
       thinkingLevel: session.thinkingLevel,
       levels: session.getAvailableThinkingLevels(),
       commands,
-      stats: session.getSessionStats(),
+      stats: withExtraSessionStats(session.getSessionStats(), this.sessionManager),
       leafId: this.sessionManager.getLeafId(),
       capabilities: { queueRecovery: true, treeNavigation: true },
     };
@@ -1007,6 +1060,14 @@ export class PiSessions {
     await Promise.all(
       [...new Set(this.runtimes.values())].map((runtime) =>
         this.close(runtime),
+      ),
+    );
+  }
+
+  async reloadModels(): Promise<void> {
+    await Promise.all(
+      [...new Set(this.runtimes.values())].map((runtime) =>
+        runtime.reloadModels().catch(() => {}),
       ),
     );
   }

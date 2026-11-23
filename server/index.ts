@@ -1,5 +1,6 @@
 import { dirname, join, resolve, sep } from 'node:path';
 import { CliBridge } from './sessions/cli-bridge';
+import { acceptsGzip, gzip } from './util';
 import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -41,6 +42,14 @@ import { pullRequests } from './git/pull-requests';
 import { Automations } from './automations';
 import { readHistory } from './sessions/history';
 import { messageText } from '../shared/transcript';
+import { ModelsManager } from './models';
+import type {
+  ModelDefaultsInput,
+  ModelUpsertInput,
+  ProviderAuthAction,
+  ProviderHeaderInput,
+  ProviderUpsertInput,
+} from '../shared/models';
 
 type Body = Record<string, unknown>;
 function text(body: Body, key: string, empty = false, max = 100_000): string {
@@ -330,6 +339,7 @@ export function startServer(
     ownershipDir: join(dirname(bridgeSocket), 'leases'),
     isOwned: (file) => bridge.owns(file),
   });
+  const models = new ModelsManager(pi.agentDir, () => pi.reloadModels());
   const automations = new Automations(dataDir, async (task) => {
     const session = await pi.create(task.cwd);
     const runtime = await runtimeFor(session.id);
@@ -445,7 +455,7 @@ export function startServer(
       try {
         const response = url.pathname.startsWith('/api/')
           ? await api(request, url)
-          : await asset(url);
+          : await asset(request, url);
         response.headers.set('X-Content-Type-Options', 'nosniff');
         response.headers.set('X-Frame-Options', 'DENY');
         response.headers.set('Referrer-Policy', 'no-referrer');
@@ -453,7 +463,7 @@ export function startServer(
           'Content-Security-Policy',
           "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         );
-        return response;
+        return gzip(request, response);
       } catch (error) {
         return Response.json(
           { error: (error as Error).message },
@@ -511,6 +521,10 @@ export function startServer(
         }, (serialized) => serialized);
       }
       if (path === '/api/pi/history') return Response.json(await pi.history());
+      if (path === '/api/models')
+        return Response.json(await models.getCatalog(), {
+          headers: { 'Cache-Control': 'no-store' },
+        });
       if (path === '/api/automations')
         return Response.json(automations.list(), { headers: { 'Cache-Control': 'no-store' } });
       if (path === '/api/pi/export') {
@@ -629,6 +643,175 @@ export function startServer(
       }
       if (path === '/api/automations/run') {
         return Response.json(await automations.runNow(text(body, 'id', false, 64)));
+      }
+      if (path === '/api/models/refresh') {
+        return Response.json(
+          await models.refreshCatalog(
+            typeof body.providerId === 'string' && body.providerId.trim()
+              ? text(body, 'providerId', false, 128)
+              : undefined,
+          ),
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+      if (path === '/api/models/discover') {
+        return Response.json(
+          await models.discoverModels({
+            providerId:
+              typeof body.providerId === 'string' && body.providerId.trim()
+                ? text(body, 'providerId', false, 128)
+                : undefined,
+            baseUrl:
+              typeof body.baseUrl === 'string' && body.baseUrl.trim()
+                ? text(body, 'baseUrl', false, 4096)
+                : undefined,
+            api:
+              typeof body.api === 'string' && body.api.trim()
+                ? text(body, 'api', false, 128)
+                : undefined,
+            apiKey:
+              typeof body.apiKey === 'string' && body.apiKey.trim()
+                ? text(body, 'apiKey', false, 8192)
+                : undefined,
+            headers:
+              body.headers && typeof body.headers === 'object' && !Array.isArray(body.headers)
+                ? (body.headers as Record<string, string>)
+                : undefined,
+          }),
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+      if (path === '/api/models/infer') {
+        return Response.json(
+          await models.inferModel({
+            providerId:
+              typeof body.providerId === 'string' && body.providerId.trim()
+                ? text(body, 'providerId', false, 128)
+                : undefined,
+            modelId: text(body, 'modelId', false, 256),
+            baseUrl:
+              typeof body.baseUrl === 'string' && body.baseUrl.trim()
+                ? text(body, 'baseUrl', false, 4096)
+                : undefined,
+            api:
+              typeof body.api === 'string' && body.api.trim()
+                ? text(body, 'api', false, 128)
+                : undefined,
+          }),
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+      if (path === '/api/models/provider') {
+        const authRaw = body.auth;
+        let auth: ProviderAuthAction | undefined;
+        if (authRaw !== undefined) {
+          if (!authRaw || typeof authRaw !== 'object' || Array.isArray(authRaw))
+            throw new Error('Invalid auth configuration');
+          const mode = (authRaw as { mode?: unknown }).mode;
+          if (mode === 'stored' || mode === 'config') {
+            auth = {
+              mode,
+              apiKey: text(authRaw as Body, 'apiKey', false, 8192),
+            };
+          } else if (
+            mode === 'keep' ||
+            mode === 'clear_stored' ||
+            mode === 'local' ||
+            mode === 'none'
+          ) {
+            auth = { mode };
+          } else {
+            throw new Error('Invalid auth mode');
+          }
+        }
+        const payload: ProviderUpsertInput = {
+          id: text(body, 'id', false, 128),
+          ...(body.name !== undefined ? { name: text(body, 'name', true, 200) } : {}),
+          ...(body.baseUrl !== undefined ? { baseUrl: text(body, 'baseUrl', true, 4096) } : {}),
+          ...(body.api !== undefined ? { api: text(body, 'api', true, 128) } : {}),
+          ...(typeof body.authHeader === 'boolean' ? { authHeader: body.authHeader } : {}),
+          ...(Array.isArray(body.headers)
+            ? { headers: body.headers as ProviderHeaderInput[] }
+            : {}),
+          auth,
+        };
+        return Response.json(await models.upsertProvider(payload), {
+          headers: { 'Cache-Control': 'no-store' },
+        });
+      }
+      if (path === '/api/models/provider/delete') {
+        return Response.json(
+          await models.deleteProvider(
+            text(body, 'id', false, 128),
+            body.removeStoredCredential !== false,
+          ),
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+      if (path === '/api/models/model') {
+        const payload: ModelUpsertInput = {
+          providerId: text(body, 'providerId', false, 128),
+          ...(body.originalId !== undefined
+            ? { originalId: text(body, 'originalId', false, 256) }
+            : {}),
+          id: text(body, 'id', false, 256),
+          ...(body.name !== undefined ? { name: text(body, 'name', true, 256) } : {}),
+          ...(body.api !== undefined ? { api: text(body, 'api', true, 128) } : {}),
+          ...(body.baseUrl !== undefined ? { baseUrl: text(body, 'baseUrl', true, 4096) } : {}),
+          reasoning: Boolean(body.reasoning),
+          ...(body.thinkingLevelMap &&
+          typeof body.thinkingLevelMap === 'object' &&
+          !Array.isArray(body.thinkingLevelMap)
+            ? { thinkingLevelMap: body.thinkingLevelMap as ModelUpsertInput['thinkingLevelMap'] }
+            : {}),
+          ...(body.defaultThinkingLevel !== undefined
+            ? { defaultThinkingLevel: text(body, 'defaultThinkingLevel', true, 32) }
+            : {}),
+          input: Array.isArray(body.input) ? (body.input as ModelUpsertInput['input']) : ['text'],
+          contextWindow: Number(body.contextWindow),
+          maxTokens: Number(body.maxTokens),
+          ...(body.cost && typeof body.cost === 'object' && !Array.isArray(body.cost)
+            ? { cost: body.cost as ModelUpsertInput['cost'] }
+            : {}),
+        };
+        return Response.json(await models.upsertModel(payload), {
+          headers: { 'Cache-Control': 'no-store' },
+        });
+      }
+      if (path === '/api/models/model/delete') {
+        return Response.json(
+          await models.deleteModel(
+            text(body, 'providerId', false, 128),
+            text(body, 'id', false, 256),
+          ),
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+      if (path === '/api/models/model/import') {
+        if (!Array.isArray(body.models)) throw new Error('Invalid models list');
+        return Response.json(
+          await models.importModels(
+            text(body, 'providerId', false, 128),
+            body.models as ModelUpsertInput[],
+          ),
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      }
+      if (path === '/api/models/defaults') {
+        const payload: ModelDefaultsInput = {
+          ...(body.defaultProvider !== undefined
+            ? { defaultProvider: text(body, 'defaultProvider', true, 128) }
+            : {}),
+          ...(body.defaultModel !== undefined
+            ? { defaultModel: text(body, 'defaultModel', true, 256) }
+            : {}),
+          ...(body.defaultThinkingLevel !== undefined
+            ? { defaultThinkingLevel: text(body, 'defaultThinkingLevel', true, 32) }
+            : {}),
+        };
+        return Response.json(await models.updateDefaults(payload), {
+          headers: { 'Cache-Control': 'no-store' },
+        });
       }
       if (path === '/api/git/pull-requests') {
         return Response.json(await pullRequests({
@@ -853,7 +1036,8 @@ export function startServer(
     join(dist, 'icon-512.png'),
     join(dist, 'manifest.webmanifest'),
   ]);
-  async function asset(url: URL) {
+  const gzipped = new Map<string, Uint8Array<ArrayBuffer>>();
+  async function asset(request: Request, url: URL) {
     const path = resolve(
       dist,
       `.${decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname)}`,
@@ -869,13 +1053,22 @@ export function startServer(
         url.pathname === '/' ? 'Run bun run build first.' : 'Not found',
         { status: 404 },
       );
-    return new Response(file, {
-      headers: {
-        'Cache-Control': url.pathname.startsWith('/assets/')
-          ? 'public, max-age=31536000, immutable'
-          : 'no-cache',
-      },
+    const headers = new Headers({
+      'Cache-Control': url.pathname.startsWith('/assets/')
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache',
+      'Content-Type': file.type,
+      Vary: 'Accept-Encoding',
     });
+    if (!acceptsGzip(request, file.type))
+      return new Response(file, { headers });
+    let body = gzipped.get(path);
+    if (!body) {
+      body = Bun.gzipSync(await file.bytes(), { level: 9 });
+      if (url.pathname.startsWith('/assets/')) gzipped.set(path, body);
+    }
+    headers.set('Content-Encoding', 'gzip');
+    return new Response(body, { headers });
   }
 
   return {

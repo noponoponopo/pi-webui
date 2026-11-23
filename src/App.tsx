@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   Bookmark,
+  Boxes,
   Check,
   ChevronDown,
   Clock,
@@ -40,6 +41,7 @@ import { Workspace } from "./workspace/Workspace";
 import { ResizeHandle } from "./components/ResizableSplit";
 import { SessionMenu } from "./workspace/SessionMenu";
 import { AutomationsView } from "./automations/AutomationsView";
+import { ModelsView } from "./models/ModelsView";
 import { PresetsModal } from "./workspace/PresetsModal";
 import { savePresets, storedPresets, type SessionPreset } from "./lib/presets";
 import { sessionKey, storedActivity, storedBookmarks, updateActivity } from "./lib/session-activity";
@@ -169,6 +171,7 @@ export function App() {
   const [displayMenuOpen, setDisplayMenuOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [automationsOpen, setAutomationsOpen] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [presets, setPresets] = useState<SessionPreset[]>(storedPresets);
   const [uiFont, setUiFont] = useState<UiFont>(storedUiFont);
@@ -324,6 +327,16 @@ export function App() {
   const [theme, setTheme] = useState(
     () => localStorage.getItem("pi-webui-theme") || "system",
   );
+  const openTool = (tool: "automations" | "models") => {
+    if (
+      document.querySelector("[data-unsaved-file-edit]") &&
+      !window.confirm("Discard your unsaved file edit?")
+    )
+      return;
+    setAutomationsOpen(tool === "automations");
+    setModelsOpen(tool === "models");
+    if (innerWidth <= 760) setSidebar(false);
+  };
   const select = (id = "") => {
     const target = `#/pi/${encodeURIComponent(id)}`;
     if (
@@ -333,6 +346,7 @@ export function App() {
     )
       return;
     setAutomationsOpen(false);
+    setModelsOpen(false);
     location.hash = target;
     if (innerWidth <= 760) setSidebar(false);
   };
@@ -686,13 +700,17 @@ export function App() {
         <nav className="sidebar-nav" aria-label="Workspace tools">
           <button
             className={automationsOpen ? "selected" : undefined}
-            onClick={() => {
-              setAutomationsOpen(true);
-              if (innerWidth <= 760) setSidebar(false);
-            }}
+            onClick={() => openTool("automations")}
           >
             <Clock size={16} />
             <span>Automations</span>
+          </button>
+          <button
+            className={modelsOpen ? "selected" : undefined}
+            onClick={() => openTool("models")}
+          >
+            <Boxes size={16} />
+            <span>Models &amp; Providers</span>
           </button>
           <button onClick={() => setPresetsOpen(true)}>
             <Sparkles size={16} />
@@ -936,7 +954,9 @@ export function App() {
       </aside>
       <main inert={mobile && sidebar}>
         <ErrorNotice error={error || historyError} />
-        {automationsOpen ? (
+        {modelsOpen ? (
+          <ModelsView onToggleSidebar={() => setSidebar(!sidebar)} />
+        ) : automationsOpen ? (
           <AutomationsView
             defaultCwd={selectedSession?.cwd || defaultCwd}
             onToggleSidebar={() => setSidebar(!sidebar)}
@@ -953,6 +973,7 @@ export function App() {
             wrapLines={wrapLines}
             onSession={onCreated}
             onToggle={() => setSidebar(!sidebar)}
+            onManageModels={() => openTool("models")}
             onCopy={async () => {
               if (!selectedSession.file) return;
               onCreated(
@@ -1258,6 +1279,18 @@ export function App() {
             Models, credentials and extensions use your existing pi
             configuration. Tools run with your local user's permissions.
           </p>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              onClick={() => {
+                setSettings(false);
+                openTool("models");
+              }}
+            >
+              <Boxes size={15} />
+              Manage models &amp; providers
+            </button>
+          </div>
         </Modal>
       )}
     </div>

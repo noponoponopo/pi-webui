@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   ArrowDown,
+  Boxes,
   ChevronDown,
   FolderOpen,
   Gauge,
@@ -37,8 +38,9 @@ import { ExtensionDialog } from "./ExtensionDialog";
 import { NoticeToast } from "./NoticeToast";
 import "./terminal.css";
 
+const transcriptModule = import("./Transcript");
 const Transcript = lazy(() =>
-  import("./Transcript").then((module) => ({ default: module.Transcript })),
+  transcriptModule.then((module) => ({ default: module.Transcript })),
 );
 const FilesView = lazy(() =>
   import("../files/FilesView").then((module) => ({ default: module.FilesView })),
@@ -53,6 +55,7 @@ export function PiView({
   onSource,
   onResume,
   onSession,
+  onManageModels,
   sendShortcut,
   wrapLines = false,
 }: {
@@ -64,6 +67,7 @@ export function PiView({
   onSource?: () => void;
   onResume?: () => void;
   onSession: (session: Session) => void;
+  onManageModels?: () => void;
 }) {
   const [data, setData] = useState<PiSnapshot>();
   const [view, setView] = useState("chat");
@@ -354,6 +358,37 @@ export function PiView({
       0,
     ), [stats?.toolCalls, projection?.items]);
   const contextUsage = stats?.contextUsage ?? state?.contextUsage;
+  const sessionMetrics = useMemo(() => {
+    const tokens = stats?.tokens;
+    const output = tokens?.output ?? 0;
+    const rawInput = tokens?.input ?? 0;
+    const cacheWrite = tokens?.cacheWrite ?? 0;
+    const cacheRead = tokens?.cacheRead ?? 0;
+    const uncachedInput = rawInput + cacheWrite;
+    const totalInput = uncachedInput + cacheRead;
+    const cacheHitRate =
+      totalInput > 0 ? Math.round((cacheRead / totalInput) * 100) : undefined;
+    const reasoning = tokens?.reasoning ?? 0;
+    const thinkingRate =
+      output > 0 && (reasoning > 0 || state?.model?.reasoning)
+        ? Math.min(100, Math.round((reasoning / output) * 100))
+        : undefined;
+    const apiRequests = stats?.apiRequests ?? stats?.assistantMessages;
+    return {
+      hasTokens: Boolean(tokens && tokens.total > 0),
+      output,
+      rawInput,
+      cacheWrite,
+      uncachedInput,
+      cacheRead,
+      totalInput,
+      cacheHitRate,
+      reasoning,
+      reasoningEstimated: Boolean(tokens?.reasoningEstimated && reasoning > 0),
+      thinkingRate,
+      apiRequests,
+    };
+  }, [stats, state?.model?.reasoning]);
   const statuses = Object.values(state?.statuses || {})
     .filter(Boolean)
     .join(" · ");
@@ -845,13 +880,22 @@ export function PiView({
                   <footer className="session-footer" hidden={empty && !statuses}>
                     <div className="session-stats" hidden={empty}>
                       {turns !== undefined && (
-                        <span>
+                        <span className="stat-turns">
                           <Gauge size={14} />
                           {turns} {turns === 1 ? "turn" : "turns"} · {calls} {calls === 1 ? "call" : "calls"}
                         </span>
                       )}
+                      {sessionMetrics.apiRequests !== undefined && sessionMetrics.apiRequests > 0 && (
+                        <span
+                          className="stat-requests"
+                          title={`AI API requests: ${sessionMetrics.apiRequests}`}
+                        >
+                          {sessionMetrics.apiRequests} req
+                        </span>
+                      )}
                       {contextUsage && (
                         <span
+                          className="stat-context"
                           title={`Context: ${contextUsage.tokens === null ? "—" : compactNumber(contextUsage.tokens)} / ${compactNumber(contextUsage.contextWindow)} tok`}
                         >
                           <ContextRing
@@ -869,7 +913,35 @@ export function PiView({
                           </span>
                         </span>
                       )}
-                      {Boolean(stats?.cost) && <span>${stats!.cost.toFixed(3)}</span>}
+                      {sessionMetrics.cacheHitRate !== undefined && (
+                        <span
+                          className="stat-cache-rate"
+                          title={`Cache hit rate (session): ${sessionMetrics.cacheHitRate}% (${compactNumber(sessionMetrics.cacheRead)} / ${compactNumber(sessionMetrics.totalInput)} input tok)`}
+                        >
+                          Cache {sessionMetrics.cacheHitRate}%
+                        </span>
+                      )}
+                      {sessionMetrics.hasTokens && (
+                        <span
+                          className="stat-token-io"
+                          title={`Tokens (Out / In / Cache) — Out: ${compactNumber(sessionMetrics.output)} · In: ${compactNumber(sessionMetrics.rawInput)}${sessionMetrics.cacheWrite > 0 ? ` (+${compactNumber(sessionMetrics.cacheWrite)} cache write)` : ""} · Cache read: ${compactNumber(sessionMetrics.cacheRead)}`}
+                        >
+                          {compactNumber(sessionMetrics.output)}/{compactNumber(sessionMetrics.uncachedInput)}/{compactNumber(sessionMetrics.cacheRead)}
+                        </span>
+                      )}
+                      {sessionMetrics.thinkingRate !== undefined && (
+                        <span
+                          className="stat-thinking"
+                          title={`Thinking share of output (session): ${sessionMetrics.reasoningEstimated ? "~" : ""}${sessionMetrics.thinkingRate}% (${compactNumber(sessionMetrics.reasoning)} / ${compactNumber(sessionMetrics.output)} tok)`}
+                        >
+                          Think {sessionMetrics.reasoningEstimated ? "~" : ""}{sessionMetrics.thinkingRate}%
+                        </span>
+                      )}
+                      {Boolean(stats?.cost) && (
+                        <span className="stat-cost" title={`Session cost: $${stats!.cost.toFixed(4)}`}>
+                          ${stats!.cost.toFixed(3)}
+                        </span>
+                      )}
                     </div>
                     {statuses && (
                       <div className="extension-status" title={statuses}>
@@ -954,11 +1026,26 @@ export function PiView({
               ))}
             {!state?.models.length && (
               <p className="empty-note">
-                No configured models. Authenticate with pi in your terminal.
+                No configured models. Add a provider or API key in Models &amp;
+                Providers.
               </p>
             )}
           </div>
           <ErrorNotice error={error} />
+          {onManageModels && (
+            <div className="dialog-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setModelPicker(false);
+                  onManageModels();
+                }}
+              >
+                <Boxes size={15} />
+                Manage models &amp; providers
+              </button>
+            </div>
+          )}
         </Modal>
       )}
       {rename && (

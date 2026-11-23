@@ -1,9 +1,10 @@
 import type {
   AgentSessionEvent,
   SessionManager,
+  SessionStats,
 } from '@earendil-works/pi-coding-agent';
 import type { Usage } from '@earendil-works/pi-ai';
-import type { PiEvent, PiState } from '../../shared/types';
+import type { PiEvent, PiSessionStats, PiState } from '../../shared/types';
 import { checkpointText, historyText, historyTree } from '../../shared/session-tree';
 
 export function sessionHistory(manager: Pick<SessionManager, 'getEntries' | 'getLeafId'>) {
@@ -55,6 +56,62 @@ export function sessionEntries(
   return { entries: entries.slice(cursor + 1), leafId: manager.getLeafId() };
 }
 
+function computeExtraSessionMetrics(
+  manager: Pick<SessionManager, 'getEntries'>,
+): { apiRequests: number; reasoning: number; reasoningEstimated: boolean } {
+  let apiRequests = 0;
+  let reasoning = 0;
+  let reasoningEstimated = false;
+
+  for (const entry of manager.getEntries()) {
+    if (
+      entry.type === 'usage' ||
+      ((entry.type === 'compaction' || entry.type === 'branch_summary') && entry.usage)
+    ) {
+      apiRequests++;
+      if (typeof entry.usage?.reasoning === 'number' && entry.usage.reasoning > 0) {
+        reasoning += entry.usage.reasoning;
+      }
+    }
+    if (entry.type !== 'message') continue;
+    const message = entry.message;
+    if (message.role === 'assistant') {
+      apiRequests++;
+      const reported = message.usage?.reasoning;
+      if (typeof reported === 'number' && reported > 0) {
+        reasoning += reported;
+      } else if (Array.isArray(message.content) && message.usage.output > 0) {
+        let thinkingChars = 0;
+        for (const block of message.content) {
+          if (block.type === 'thinking') thinkingChars += block.thinking.length;
+        }
+        if (thinkingChars > 0) {
+          reasoning += Math.min(message.usage.output, Math.max(1, Math.round(thinkingChars / 4)));
+          reasoningEstimated = true;
+        }
+      }
+    }
+  }
+
+  return { apiRequests, reasoning, reasoningEstimated };
+}
+
+export function withExtraSessionStats(
+  stats: SessionStats,
+  manager: Pick<SessionManager, 'getEntries'>,
+): PiSessionStats {
+  const extra = computeExtraSessionMetrics(manager);
+  return {
+    ...stats,
+    apiRequests: extra.apiRequests,
+    tokens: {
+      ...stats.tokens,
+      reasoning: extra.reasoning,
+      ...(extra.reasoningEstimated ? { reasoningEstimated: true } : {}),
+    },
+  };
+}
+
 export function sessionStats(
   manager: Pick<SessionManager, 'getEntries' | 'getSessionId' | 'getSessionFile'>,
   contextUsage?: PiState['contextUsage'],
@@ -98,7 +155,7 @@ export function sessionStats(
   }
   stats.tokens.total = stats.tokens.input + stats.tokens.output +
     stats.tokens.cacheRead + stats.tokens.cacheWrite;
-  return stats;
+  return withExtraSessionStats(stats, manager);
 }
 
 export function toPiEvent(event: AgentSessionEvent): PiEvent | undefined {

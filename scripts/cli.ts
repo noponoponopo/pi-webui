@@ -6,6 +6,7 @@ import {
   disableService,
   installLauncher,
   installService,
+  restartService,
   startService,
   stopService,
 } from './service';
@@ -87,13 +88,11 @@ async function main() {
       });
       if (await build.exited !== 0)
         throw new Error('Build failed. The service was not restarted.');
-      await stopService(args.includes('--force'));
-      console.log((await startService()).url);
+      console.log((await restartService(args.includes('--force'))).url);
       return;
     }
     case 'restart':
-      await stopService(args.includes('--force'));
-      console.log((await startService()).url);
+      console.log((await restartService(args.includes('--force'))).url);
       return;
     case 'open': {
       const runtime = (await liveRuntime()) ?? (await startService());

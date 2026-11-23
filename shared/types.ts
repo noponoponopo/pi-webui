@@ -88,6 +88,13 @@ export type PendingSelection = {
   index: number;
   queue: Projection["queue"];
 };
+export type PiSessionStats = SessionStats & {
+  apiRequests?: number;
+  tokens: SessionStats["tokens"] & {
+    reasoning?: number;
+    reasoningEstimated?: boolean;
+  };
+};
 export type PiState = {
   owner?: "web" | "cli";
   connected?: boolean;
@@ -99,7 +106,7 @@ export type PiState = {
   thinkingLevel: RpcSessionState["thinkingLevel"];
   levels: string[];
   commands: { name: string; description?: string }[];
-  stats?: SessionStats;
+  stats?: PiSessionStats;
   contextUsage?: SessionStats["contextUsage"];
   dialogs: RpcExtensionUIRequest[];
   statuses: Record<string, string>;

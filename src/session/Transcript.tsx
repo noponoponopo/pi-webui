@@ -17,7 +17,7 @@ import type {
   Projection,
   TranscriptPage,
 } from '../../shared/types';
-import { messageText } from '../../shared/transcript';
+import { estimateMessageTokens, messageText } from '../../shared/transcript';
 import { reconcileHistory } from '../../shared/display';
 import {
   chatTurns,
@@ -619,22 +619,31 @@ function Raw({ projection, query, onSearch }: {
         : message.role;
   const history = useMemo(() => {
     const visible = items;
+    const entryTokens = visible.map((item) => estimateMessageTokens(item.message));
+    const laneColumns = visible.length
+      ? entryTokens.map((tok) => `minmax(2px, ${tok}fr)`).join(' ')
+      : '1fr';
+    const formatTok = (tok: number) =>
+      tok >= 1000 ? `${(tok / 1000).toFixed(1)}k` : String(tok);
     return <>
       <div className="raw-timeline" aria-label="Message timeline">
         {(['input', 'agent', 'tool'] as const).map((lane) => (
           <div className="raw-lane" key={lane}>
             <span>{lane}</span>
-            <div style={{ gridTemplateColumns: `repeat(${Math.max(1, visible.length)}, minmax(4px, 1fr))` }}>
+            <div style={{ gridTemplateColumns: laneColumns }}>
               {visible.map((item, index) => {
                 const itemLane = role(item.message) === 'tool'
                   ? 'tool' : item.message.role === 'assistant' ? 'agent' : 'input';
+                const exactOutput =
+                  item.message.role === 'assistant' && item.message.usage.output > 0;
+                const tokLabel = `${exactOutput ? '' : '~'}${formatTok(entryTokens[index])} tok`;
                 return itemLane === lane && (
                   <button
                     className={role(item.message)}
                     key={item.id}
                     style={{ gridColumn: index + 1 }}
-                    title={`${new Date(item.message.timestamp).toLocaleTimeString()} · ${role(item.message)} · ${messageText(item.message).slice(0, 100)}`}
-                    aria-label={`Go to ${role(item.message)} message`}
+                    title={`${new Date(item.message.timestamp).toLocaleTimeString()} · ${role(item.message)} · ${tokLabel} · ${messageText(item.message).slice(0, 100)}`}
+                    aria-label={`Go to ${role(item.message)} message (${tokLabel})`}
                     onClick={() => document.getElementById(`entry-${item.id}`)?.scrollIntoView({ block: 'center' })}
                   />
                 );
